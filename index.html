@@ -240,6 +240,7 @@ const TICK = 0.15;      // seconds per cave step
 const PUSH_TICKS = 2;   // a rock budges on the 2nd step of pushing — feels heavy, avoids accidents
 const BOMB_FUSE = 9;
 const MAGIC_TICKS = 140;
+const STUCK_STEPS = 10;   // ~1.5 s boxed in before the 'boxed in?' card shows
 const REVEAL_TIME = 0.9;
 const T = { EMPTY: 0, MUD: 1, WALL: 2, STEEL: 3, ROCK: 4, PEARL: 5, EXIT: 6, PLAYER: 7, CRAB: 8, JELLY: 9,
   ALGAE: 10, MAGIC: 11, BOOM: 12, KEY: 13, GATE: 14, BOMBITEM: 15, BOMB: 16, FISH: 17, CLOCK: 18, ENTRY: 19 };
@@ -546,7 +547,7 @@ function newCave(idx) {
     magic: { state: 'dormant', t: 0 }, algaeFast: false, algaeOpen: false, algaeCount: 0,
     pending: [], sfx: {}, phase: 'reveal', phaseT: 0, entry: -1, exit: -1,
     player: { i: -1, alive: true, face: 1, lastDir: 1, pushTarget: -1, pushCount: 0, idle: 0, cause: '', lastBump: -1, moveTick: -9 },
-    chain: 0, chainT: 0, camX: 0, camY: 0, hintT: 0, hintGone: false, warned: -1, result: null,
+    chain: 0, chainT: 0, camX: 0, camY: 0, hintT: 0, hintGone: false, stuck: 0, restartAsk: -9, warned: -1, result: null,
     pearlsSeen: 0
   };
   const rand = mulberry32(idx * 31 + 5);
@@ -576,6 +577,23 @@ function startCave(idx) {
   G.parts = []; G.floats = []; G.toast = null; G.flash = 0; G.shake = 0;
   G.queuedDir = -1; G.bombQueued = false;
   snapCamera();
+}
+// restart mid-cave; when the lotl is boxed in it counts as a try (so SKIP still shows up after 3)
+function restartCave() {
+  if (C.stuck >= STUCK_STEPS) { save.tries[C.idx] = (save.tries[C.idx] || 0) + 1; persist(); }
+  Snd.ui(); startCave(C.idx);
+}
+// can the lotl go anywhere at all? (dig, grab, step, push, open gate/exit)
+function canMove(c) {
+  const i = c.player.i, t = c.t;
+  for (let dir = 0; dir < 4; dir++) {
+    const ti = i + OFF[dir], tt = t[ti];
+    if (tt === T.EMPTY || tt === T.MUD || tt === T.PEARL || tt === T.KEY || tt === T.BOMBITEM || tt === T.CLOCK) return true;
+    if (tt === T.GATE && c.keys[c.d[ti]]) return true;
+    if (tt === T.EXIT && c.exitOpen) return true;
+    if (tt === T.ROCK && (dir === 1 || dir === 3) && !c.fall[ti] && t[ti + OFF[dir]] === T.EMPTY) return true;
+  }
+  return false;
 }
 
 /* ============================================================
@@ -611,7 +629,10 @@ function stepCave() {
   if (c.pending.length) { const list = c.pending; c.pending = []; for (const p of list) explodeAt(p.i, p.pearl); }
   if (c.magic.state === 'active' && --c.magic.t <= 0) c.magic.state = 'spent';
   c.algaeOpen = false; c.algaeCount = 0;
-  if (c.phase === 'play' && c.player.alive && c.t[c.player.i] === T.PLAYER) playerUpdate(c.player.i);
+  if (c.phase === 'play' && c.player.alive && c.t[c.player.i] === T.PLAYER) {
+    playerUpdate(c.player.i);
+    c.stuck = c.t[c.player.i] === T.PLAYER && !canMove(c) ? c.stuck + 1 : 0;
+  }
   const w = c.w, t = c.t, tick = c.tick;
   for (let y = 1; y < c.h - 1; y++) for (let x = 1; x < w - 1; x++) {
     const i = y * w + x;
@@ -963,7 +984,7 @@ window.addEventListener('keydown', e => {
       }
       if (fresh && (code === 'KeyB' || code === 'KeyX' || code === 'Enter')) { G.bombQueued = true; return; }
       if (fresh && (code === 'Escape' || code === 'KeyP')) { G.paused = true; kbFocus = 0; Snd.ui(); return; }
-      if (fresh && code === 'KeyR' && C.phase === 'play') { startCave(C.idx); return; }
+      if (fresh && code === 'KeyR' && C.phase === 'play') { restartCave(); return; }
       return;
     }
   }
@@ -1837,9 +1858,17 @@ function drawHUD() {
   // time + score + pause
   const tl = Math.ceil(c.timeLeft), low = tl <= 10 && c.phase === 'play';
   const tcol = low ? (Math.sin(G.time * 12) > 0 ? '#ff6b6b' : '#ffffff') : '#ffffff';
-  txt('⏱', W - 300, HUD_H / 2 + 2, 26, '#fff', 'center', 600);
-  txt(String(tl), W - 282, HUD_H / 2 + 2, 32, tcol, 'left');
-  txt(String(c.score).padStart(5, '0'), W - 90, HUD_H / 2 + 2, 26, '#b8f0ff', 'right');
+  txt('⏱', W - 356, HUD_H / 2 + 2, 26, '#fff', 'center', 600);
+  txt(String(tl), W - 338, HUD_H / 2 + 2, 32, tcol, 'left');
+  txt(String(c.score).padStart(5, '0'), W - 146, HUD_H / 2 + 2, 26, '#b8f0ff', 'right');
+  // restart: one tap when stuck, otherwise tap twice (so a stray thumb doesn't wipe the cave)
+  const stuck = c.stuck >= STUCK_STEPS;
+  const ask = G.time - c.restartAsk < 2.2;
+  roundButton('reset', W - 102, HUD_H / 2, 24, '↻', { act: () => {
+    if (playOverlay() || c.phase !== 'play') return;
+    if (stuck || ask) restartCave(); else { c.restartAsk = G.time; Snd.ui(); }
+  }, size: 26, color: stuck || ask ? (Math.sin(G.time * 8) > 0 ? '#ffb347' : '#ffe27a') : '#ffffff' });
+  if (ask && !stuck) txt('tap ↻ again to restart', W - 72, HUD_H + 26, 20, '#ffe27a', 'right', 800, 5);
   roundButton('pause', W - 44, HUD_H / 2, 24, 'II', { act: () => { if (!playOverlay()) { G.paused = true; kbFocus = 0; } }, size: 20, color: '#ffffff' });
 }
 
@@ -1874,7 +1903,7 @@ function hintText(h) {
 }
 function drawHint() {
   const c = C;
-  if (!c.L.hint || c.hintGone || c.phase !== 'play' || c.hintT > 9) return;
+  if (!c.L.hint || c.hintGone || c.phase !== 'play' || c.hintT > 9 || c.stuck >= STUCK_STEPS) return;
   const a = clamp(c.hintT * 3, 0, 1) * clamp((9 - c.hintT) * 2, 0, 1);
   const text = hintText(c.L.hint);
   const maxW = Math.min(W - 120, 820);
@@ -1887,6 +1916,18 @@ function drawHint() {
   ctx.strokeStyle = '#ffe27a'; ctx.lineWidth = 3; ctx.stroke();
   lines.forEach((ln, k) => txt(ln, W / 2, y + 32 + k * 34, 26, '#fff'));
   ctx.restore();
+}
+function drawStuck() {
+  const c = C;
+  if (c.phase !== 'play' || c.stuck < STUCK_STEPS || G.paused) return;
+  const a = clamp((c.stuck - STUCK_STEPS) / 4, 0, 1);
+  const pw = Math.min(W - 80, 520), ph = 150, px = (W - pw) / 2, py = G.touchMode ? HUD_H + 40 : H - ph - 30;
+  ctx.save(); ctx.globalAlpha = a;
+  ctx.fillStyle = 'rgba(10,20,35,0.86)'; rr(ctx, px, py, pw, ph, 22); ctx.fill();
+  ctx.strokeStyle = '#ffb347'; ctx.lineWidth = 3; ctx.stroke();
+  txt('Boxed in? No way out!', W / 2, py + 34, 28, '#fff', 'center', 800);
+  ctx.restore();
+  button('stuckRetry', px + 50, py + 66, pw - 100, 64, G.touchMode ? '↻ TRY AGAIN' : '↻ TRY AGAIN  (R)', { act: restartCave, color: '#ffb347', size: 28, nav: false });
 }
 function wrapLines(text, maxW) {
   const words = text.split(' '), lines = [];
@@ -2169,6 +2210,7 @@ function frame(now) {
     if (G.flash > 0) { ctx.fillStyle = `rgba(255,255,240,${G.flash * 0.6})`; ctx.fillRect(0, HUD_H, W, H - HUD_H); }
     drawHUD();
     drawHint();
+    drawStuck();
     drawToast();
     drawTouchControls();
     const ov = playOverlay();

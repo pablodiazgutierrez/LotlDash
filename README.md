@@ -25,7 +25,7 @@ On a tablet: landscape orientation, add to home screen for fullscreen.
 | Slurp (grab without moving) | hold SPACE or SHIFT + a direction | hold 👅 SLURP + drag |
 | Drop a puffer bomb | B (or X / ENTER) | 💥 BOMB |
 | Pause | ESC or P | the II button |
-| Restart the cave | R | pause → RESTART |
+| Restart the cave | R | tap ↻ twice (once when boxed in), or pause → RESTART |
 
 Menus work with mouse/touch and keyboard: arrows move, ENTER presses, ESC goes back.
 On the title screen `◀ ▶` pick a lotl, `C` opens the caves, `H` opens How To Play.
@@ -89,6 +89,9 @@ structures, so changing `seed` reshuffles a cave while keeping its set pieces.
 ### Made for a kid
 
 - **No lives, no game over.** Losing just offers `↻ TRY AGAIN` (ENTER). R restarts instantly.
+- **Boxed in?** If the lotl can't move in any direction (no mud, no water, no pushable rock)
+  for ~1.5 s, a `Boxed in? ↻ TRY AGAIN` card pops up and the ↻ button in the top bar
+  flashes and restarts on one tap. A boxed-in restart counts as a try toward SKIP.
 - After **3 failed tries** on a cave, the oops card offers `⏭ SKIP TO THE NEXT CAVE`.
 - Generous timers; the last 10 seconds tick and flash.
 - **Stars**: ★ clear it, ★ collect 40% more pearls than the quota, ★ finish with 35% of the
