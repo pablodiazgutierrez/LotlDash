@@ -26,6 +26,7 @@ On a tablet: landscape orientation, add to home screen for fullscreen.
 | Drop a puffer bomb | B (or X / ENTER) | 💥 BOMB |
 | Pause | ESC or P | the II button |
 | Restart the cave | R | tap ↻ twice (once when boxed in), or pause → RESTART |
+| Hint | H | tap 💡 |
 
 Menus work with mouse/touch and keyboard: arrows move, ENTER presses, ESC goes back.
 On the title screen `◀ ▶` pick a lotl, `C` opens the caves, `H` opens How To Play.
@@ -69,9 +70,9 @@ then the last world mixes everything.
 | 2 | | Look Out Below | rocks fall when you dig under them |
 | 3 | | Push & Plop | pushing rocks down holes |
 | 4 | | Avalanche Valley | a big scrolling random cave, rolling rocks |
-| 5 | Crab Grotto | Crab Shack | dropping rocks into crab jars |
+| 5 | Crab Grotto | Crab Shack | dropping rocks on crabs: wait for the crab to walk under the hole |
 | 6 | | Jelly Jars | jellies → 9 pearls |
-| 7 | | Slurp! | the slurp, next to a crab corridor |
+| 7 | | Slurp! | the slurp, next to a crab loop |
 | 8 | | Glow Coral | turning rocks into pearls |
 | 9 | Kelp Caves | Algae Garden | algae meets jellies |
 | 10 | | Catfish Cove | the pearl thief |
@@ -100,12 +101,44 @@ structures, so changing `seed` reshuffles a cave while keeping its set pieces.
 - **Lotl collection**: Mochi and Coal are free. Matcha (clear cave 3), Storm (200 pearls),
   Blaze (clear cave 8) and Splash (24 stars) are earned. Colour only, no gameplay difference.
 
-## Checking the caves
+## Checking the caves: the solver
 
-`LotlDash.validate()` in the browser console builds every cave and reports pearls vs quota,
-whether the exit is reachable by digging, jelly/crab/fish counts, and whether the lotl
-survives 40 idle steps at the start (no rock lands on your head the moment you appear).
-Run it after editing a cave. Pearls behind gates show up as `pearls` but not `reachPearls`.
+Every cave is **proven solvable by playing it**. A solver (the `SOLVER` section of the
+script) runs a copy of the cave with the real game rules (`stepCave` on a clone, with sound,
+particles and saving switched off) and plays it like a careful kid would:
+
+1. walk to the nearest pearl / key / puffer / clock (the shell once it's open), simulating
+   every step a little ahead so it never walks under a falling rock, into a crab, or into a
+   pocket that rocks will close behind it. It keeps two cells away from crabs and jellies
+   when it can, and doesn't dig the mud under rocks unless there's no other way;
+2. when nothing useful is reachable, it tries the moves that change the cave and keeps the
+   one that makes the most pearls reachable: slurp the mud under a rock (trying every moment
+   over a full lap of the crab or jelly underneath, so it can drop rocks on critters), push a
+   rock (as far as it goes), drop a puffer next to coral and swim clear, or wait (algae).
+
+Critter and algae randomness comes from a per-cave seed, so a copy of a cave plays out
+exactly like the original, and the solver's timing is exact.
+
+Open **`/?check`** (e.g. `http://localhost:8000/?check`) and the console prints a table for
+every cave and either `ALL 16 CAVES SOLVED` or the caves that need a look. Or run
+`LotlDash.validate()` (static checks plus the solver), `LotlDash.solveAll()`, or
+`LotlDash.solve(5)` for one cave. **Run it after editing any cave.** A cave the solver
+finishes is definitely possible; one it can't finish is either impossible or needs a trick
+the solver doesn't know, so look at it by hand.
+
+At the time of writing it solves all 16 caves with 5 out of 5 different critter/algae seeds,
+in about a second for the lot.
+
+### 💡 Hints
+
+The 💡 button in the top bar (or H) runs the same solver from wherever the player is right
+now (the cave pauses for the fraction of a second it takes) and shows its next move: a
+dashed ring and a bouncing arrow on the cell (an arrow on the screen edge if it's off screen)
+plus a one-line card, e.g. *"Wait until the crab is right under this rock, then slurp the mud
+below it!"*, *"Drop a puffer here, then swim away fast!"*, *"Push this rock!"*. If the
+solver can't get a single pearl further from here (the lotl dug itself into a corner), it
+says so and points at ↻. After 30 s without a new pearl (`HINT_NUDGE`) the 💡 button
+pulses and says *need a hint?*.
 
 ## Tuning hooks
 
@@ -133,10 +166,24 @@ GitHub Pages, same as Lotl Quest: repo `pablodiazgutierrez/LotlDash`, branch `ma
 folder, with a `CNAME` file for `lotldash.pablart.com`. DNS is a Route53 CNAME
 `lotldash.pablart.com → pablodiazgutierrez.github.io`. Push to `main` to deploy.
 
+### Designing critter caves
+
+Crabs keep a wall on their left, jellies on their right. In open water with nothing to
+follow they spin in a tiny 2×2 circle forever, which is why the first Crab Shack's crabs
+could never be hit. So critters that you're meant to squash live in **loops around a solid
+core** (the jars in caves 5 and 6, the tunnel in cave 7, the `ring` op in the big caves).
+Placed with the core on their wall side, they circle it forever, pass under the drop hole
+every lap, and never turn into the hole (it's on their other side), so they can't climb out
+or blast you while you release the rock. They all start facing left, so put a crab in the
+top lane (core below it) and a jelly in the bottom lane (core above it).
+
 ## Known rough edges / next ideas
 
-- The random caves (4, 9, 13–16) were checked by the validator and spot-played, not
-  fully played through by a kid yet. If one is too hard, lower its `need` or change its `seed`.
+- Every cave is proven solvable by the solver, but the solver isn't a kid: it never panics
+  and its timing is perfect. If a cave turns out too hard in real play, lower its `need`
+  or change its `seed`, then re-run `/?check`.
+- The solver is greedy, so a 💡 hint can occasionally say "try ↻" for a position a very
+  clever player could still rescue.
 - The music is one gentle loop. Each world could get its own.
 - No level editor yet. The ASCII format is simple enough that a kid could draw caves on
   graph paper and have them typed in.
