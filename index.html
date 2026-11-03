@@ -359,7 +359,7 @@ const LEVELS = [
       '..*...*...*...*...*...*...*....',
       '..............................X'] },
   { name: 'Slurp!', world: 1, need: 13, time: 160,
-    hint: '{slurp} Grab pearls without moving. Never touch the crab!',
+    hint: '{slurp} Slurp the pearls next to the crab tunnel, and never touch the crab!',
     map: [
       'P....*.....*.....*.....*......',
       '=========================.....',
@@ -368,15 +368,15 @@ const LEVELS = [
       '..............................',
       '...*..........*..........*...X'] },
   { name: 'Glow Coral', world: 1, need: 16, time: 120,
-    hint: 'Drop rocks through the glowing coral to turn them into pearls! It only glows for a little while.',
+    hint: 'Drop rocks through the glowing coral to turn them into pearls! It only glows for a little while. Then dig down the side to grab them.',
     map: [
       'P..............................',
-      '.o.o.o.o.o.o.o.o.o.o.o.o.o.....',
-      '.o.o.o.o.o.o.o.o.o.o.o.o.o.....',
-      '.*.....*.....*.....*.....*.....',
-      'mmmmmmmmmmmmmmmmmmmmmmmmmmm===.',
-      '                           =...',
-      '                           ....',
+      '..o.o.o.o.o.o.o.o.o.o.o.o.o....',
+      '..o.o.o.o.o.o.o.o.o.o.o.o.o....',
+      '..*.....*.....*.....*.....*....',
+      '.=mmmmmmmmmmmmmmmmmmmmmmmmm===.',
+      '.=                         =...',
+      '..                         ....',
       '..............................X'] },
 
   // ---------------- World 3: Kelp Caves ----------------
@@ -981,7 +981,6 @@ window.addEventListener('keydown', e => {
       if (KEYDIR[code] != null) {
         const d = KEYDIR[code];
         if (fresh) { G.dirStack = G.dirStack.filter(x => x !== d); G.dirStack.push(d); if (C.phase === 'play') G.queuedDir = d; }
-        dismissHint();
         return;
       }
       if (fresh && (code === 'KeyB' || code === 'KeyX' || code === 'Enter')) { G.bombQueued = true; return; }
@@ -1047,7 +1046,6 @@ cvs.addEventListener('pointerdown', e => {
     return;
   }
   if (G.screen === 'play' && C && !playOverlay()) {
-    dismissHint();
     if (!G.stick) G.stick = { pid: e.pointerId, ox: p.x, oy: p.y, x: p.x, y: p.y, dir: -1 };
   }
 });
@@ -1091,7 +1089,7 @@ function playOverlay() {
   if (C.phase === 'timeup' && C.phaseT > 0.7) return 'timeup';
   return null;
 }
-function dismissHint() { if (C && C.phase === 'play' && C.hintT > 0.6) C.hintGone = true; }
+const HINT_TIME = 14;   // seconds the cave's tip stays up (it's also on the pause card)
 function goTitle() { G.screen = 'title'; G.paused = false; kbFocus = 0; C = null; }
 function openCaves() { G.screen = 'caves'; G.paused = false; G.cavesSel = Math.min(save.unlocked - 1, LEVELS.length - 1); C = null; kbFocus = 0; Snd.ui(); }
 function openHelp() { G.helpFrom = G.screen === 'play' ? 'play' : G.screen; G.screen = 'help'; kbFocus = 0; Snd.ui(); }
@@ -1858,8 +1856,8 @@ function drawHUD() {
   if (c.hasBombs || c.bombs > 0) { drawPuffer(x + 20, HUD_H / 2, false, 0, 0.75); txt('×' + c.bombs, x + 42, HUD_H / 2 + 2, 26, '#ffe27a', 'left'); x += 90; }
   // name in the middle when there's room
   const name = `${c.idx + 1}. ${c.L.name}`;
-  const cxm = W / 2;
-  if (x < cxm - 140) txt(name, cxm, HUD_H / 2 + 2, fitSize(name, 300, 24), '#cfe6ee', 'center', 800);
+  const right = W - 380, room = right - x - 30;   // space between the pearl/keys row and the timer
+  if (room > 150) txt(name, (x + right) / 2, HUD_H / 2 + 2, fitSize(name, Math.min(room, 320), 24), '#cfe6ee', 'center', 800);
   // time + score + pause
   const tl = Math.ceil(c.timeLeft), low = tl <= 10 && c.phase === 'play';
   const tcol = low ? (Math.sin(G.time * 12) > 0 ? '#ff6b6b' : '#ffffff') : '#ffffff';
@@ -1908,8 +1906,8 @@ function hintText(h) {
 }
 function drawHint() {
   const c = C;
-  if (!c.L.hint || c.hintGone || c.phase !== 'play' || c.hintT > 9 || c.stuck >= STUCK_STEPS) return;
-  const a = clamp(c.hintT * 3, 0, 1) * clamp((9 - c.hintT) * 2, 0, 1);
+  if (!c.L.hint || c.hintGone || c.phase !== 'play' || c.hintT > HINT_TIME || c.stuck >= STUCK_STEPS) return;
+  const a = clamp(c.hintT * 3, 0, 1) * clamp((HINT_TIME - c.hintT) * 2, 0, 1);
   const text = hintText(c.L.hint);
   const maxW = Math.min(W - 120, 820);
   ctx.save(); ctx.globalAlpha = a;
@@ -1945,7 +1943,7 @@ function drawToast() {
   if (!G.toast) return;
   const k = G.toast.t, a = clamp(k * 5, 0, 1) * clamp((2.6 - k) * 3, 0, 1);
   const s = 1 + Math.max(0, 0.25 - k) * 1.5;
-  const hintUp = G.touchMode && C && C.L.hint && !C.hintGone && C.phase === 'play' && C.hintT < 9;
+  const hintUp = G.touchMode && C && C.L.hint && !C.hintGone && C.phase === 'play' && C.hintT < HINT_TIME;
   ctx.save(); ctx.globalAlpha = a; ctx.translate(W / 2, HUD_H + (hintUp ? 170 : 70)); ctx.scale(s, s);
   txt(G.toast.text, 0, 0, fitSize(G.toast.text, W - 80, 42), G.toast.color, 'center', 800, 8);
   ctx.restore();
@@ -1964,14 +1962,23 @@ function drawOverlay(kind) {
   const c = C;
   if (kind === 'paused') {
     dim(0.55);
-    const pw = 460, ph = 470, px = (W - pw) / 2, py = (H - ph) / 2;
+    // the cave's tip, so it can be read again after it fades
+    ctx.font = `700 21px ${FONT}`;
+    const tip = c.L.hint ? wrapLines('💡 ' + hintText(c.L.hint), 400) : [];
+    const tipH = tip.length ? tip.length * 27 + 22 : 0;
+    const pw = 500, ph = 470 + tipH, px = (W - pw) / 2, py = Math.max(8, (H - ph) / 2);
     panel(px, py, pw, ph, '#e9fbff');
     txt('PAUSED', W / 2, py + 50, 50, '#ff7aa8', 'center', 800, 8);
-    button('resume', px + 60, py + 100, pw - 120, 70, '▶ KEEP GOING', { act: () => { G.paused = false; }, color: '#3ccf7a', size: 32 });
-    button('restart', px + 60, py + 186, pw - 120, 60, '↻ RESTART CAVE', { act: () => startCave(c.idx), color: '#ffb347' });
-    button('help', px + 60, py + 262, pw - 120, 60, '? HOW TO PLAY', { act: openHelp, color: '#7aa8ff' });
-    button('caves', px + 60, py + 338, (pw - 130) / 2, 60, '🗺 CAVES', { act: openCaves, color: '#b98cff', size: 26 });
-    button('menu', px + 70 + (pw - 130) / 2, py + 338, (pw - 130) / 2, 60, '🏠 MENU', { act: goTitle, color: '#8a93a6', size: 26, back: true });
+    if (tip.length) {
+      ctx.fillStyle = 'rgba(255,226,122,0.35)'; rr(ctx, px + 30, py + 88, pw - 60, tipH - 8, 14); ctx.fill();
+      tip.forEach((ln, k) => txt(ln, W / 2, py + 88 + 24 + k * 27, 21, '#3a2a10', 'center', 700, 0));
+    }
+    const by = py + tipH;
+    button('resume', px + 60, by + 100, pw - 120, 70, '▶ KEEP GOING', { act: () => { G.paused = false; }, color: '#3ccf7a', size: 32 });
+    button('restart', px + 60, by + 186, pw - 120, 60, '↻ RESTART CAVE', { act: () => startCave(c.idx), color: '#ffb347' });
+    button('help', px + 60, by + 262, pw - 120, 60, '? HOW TO PLAY', { act: openHelp, color: '#7aa8ff' });
+    button('caves', px + 60, by + 338, (pw - 130) / 2, 60, '🗺 CAVES', { act: openCaves, color: '#b98cff', size: 26 });
+    button('menu', px + 70 + (pw - 130) / 2, by + 338, (pw - 130) / 2, 60, '🏠 MENU', { act: goTitle, color: '#8a93a6', size: 26, back: true });
     soundToggles(px + pw / 2, py + ph - 26);
     return;
   }

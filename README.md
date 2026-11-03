@@ -94,6 +94,7 @@ structures, so changing `seed` reshuffles a cave while keeping its set pieces.
   flashes and restarts on one tap. A boxed-in restart counts as a try toward SKIP.
 - After **3 failed tries** on a cave, the oops card offers `⏭ SKIP TO THE NEXT CAVE`.
 - Generous timers; the last 10 seconds tick and flash.
+- Each cave's tip stays up for 14 s (`HINT_TIME`) and is repeated on the pause card.
 - **Stars**: ★ clear it, ★ collect 40% more pearls than the quota, ★ finish with 35% of the
   time left. The criteria show on the clear card.
 - **Lotl collection**: Mochi and Coal are free. Matcha (clear cave 3), Storm (200 pearls),
