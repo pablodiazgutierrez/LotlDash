@@ -120,7 +120,8 @@ LotlDash.reset()           // wipe the save and reload
 ```
 
 Feel knobs are constants near the top of the script: `TICK` (step length, 0.15 s),
-`PUSH_TICKS`, `BOMB_FUSE`, `MAGIC_TICKS`. Algae speed and size are per-cave
+`PUSH_TICKS`, `BOMB_FUSE`, `MAGIC_TICKS`, `CRITTER_EVERY` (crabs, jellies and the catfish step
+once every 2 cave steps, i.e. half the lotl's speed; set it to 1 for classic-speed critters). Algae speed and size are per-cave
 (`algaeSlow`, `algaeMax`).
 
 The save lives in `localStorage['lotldash.save.v1']`.
