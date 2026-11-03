@@ -1,0 +1,2229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0b3a4a">
+<meta name="description" content="Lotl Dash: dig through underwater caves, dodge falling rocks, and grab the pearls.">
+<meta property="og:title" content="Lotl Dash">
+<meta property="og:description" content="Dig, dodge, and grab the pearls! An axolotl cave adventure.">
+<meta property="og:image" content="assets/title.jpg">
+<title>Lotl Dash</title>
+<link rel="icon" type="image/png" href="assets/icon-64.png">
+<link rel="apple-touch-icon" href="assets/icon-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;800&display=swap" rel="stylesheet">
+<style>
+  html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#06161d;
+    -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;
+    touch-action:none;overscroll-behavior:none;}
+  #game{display:block;width:100%;height:100%;touch-action:none;outline:none;}
+  #rotate{position:fixed;inset:0;display:none;place-items:center;text-align:center;
+    background:#0b3a4a;color:#ffe3ec;font:800 24px/1.4 "Baloo 2",system-ui,-apple-system,"Segoe UI",sans-serif;padding:24px;z-index:9}
+  @media (orientation:portrait) and (max-width:900px){ #rotate{display:grid} }
+</style>
+</head>
+<body>
+<canvas id="game" tabindex="0"></canvas>
+<div id="rotate">🔄<br>Turn your tablet sideways<br>to play Lotl Dash!</div>
+<script>
+"use strict";
+/* ============================================================
+   LOTL DASH — dig, dodge, grab the pearls.
+   A rocks-and-pearls cave digger starring the lotls from Lotl Quest.
+   Single file, no dependencies. Runs from file:// or any host.
+   ============================================================ */
+
+const cvs = document.getElementById('game');
+const ctx = cvs.getContext('2d', { alpha: false });
+const FONT = '"Baloo 2", "Arial Rounded MT Bold", ui-rounded, system-ui, -apple-system, sans-serif';
+
+/* ---------- world / viewport ---------- */
+const H = 720;                 // logical height, always
+let W = 1280;                  // logical width, from aspect
+let scale = 1, offX = 0, offY = 0, DPR = 1;
+let spritesFor = '';
+
+function resize() {
+  const cw = window.innerWidth, ch = window.innerHeight;
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = Math.max(880, Math.min(1700, Math.round(H * (cw / ch))));
+  cvs.width = Math.round(cw * DPR);
+  cvs.height = Math.round(ch * DPR);
+  cvs.style.width = cw + 'px';
+  cvs.style.height = ch + 'px';
+  scale = Math.min(cw / W, ch / H);
+  offX = (cw - W * scale) / 2;
+  offY = (ch - H * scale) / 2;
+  spritesFor = '';
+}
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 120));
+const toWorld = (cx, cy) => ({ x: (cx - offX) / scale, y: (cy - offY) / scale });
+
+/* ---------- tiny helpers ---------- */
+const TAU = Math.PI * 2;
+const rnd = (a, b) => a + Math.random() * (b - a);
+const pick = a => a[(Math.random() * a.length) | 0];
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const lerp = (a, b, t) => a + (b - a) * t;
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+/* ---------- save data ---------- */
+const SAVE_KEY = 'lotldash.save.v1';
+let save = { unlocked: 1, stars: {}, best: {}, tries: {}, pearlsAll: 0, lotl: 0, mute: false, music: true, champion: false, seenLotls: ['mochi', 'coal'] };
+try { Object.assign(save, JSON.parse(localStorage.getItem(SAVE_KEY) || '{}')); } catch (e) {}
+const persist = () => { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) {} };
+
+/* ============================================================
+   SOUND — tiny WebAudio blips, plus a soft looping tune
+   ============================================================ */
+const Snd = {
+  ac: null, master: null, noiseBuf: null,
+  boot() {
+    if (!this.ac) {
+      try {
+        this.ac = new (window.AudioContext || window.webkitAudioContext)();
+        this.master = this.ac.createGain(); this.master.gain.value = 0.9;
+        this.master.connect(this.ac.destination);
+        const n = this.ac.sampleRate, b = this.ac.createBuffer(1, n, n), d = b.getChannelData(0);
+        for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+        this.noiseBuf = b;
+      } catch (e) { this.ac = null; }
+    }
+    if (this.ac && this.ac.state === 'suspended') this.ac.resume();
+    Music.start();
+  },
+  ok() { return this.ac && !save.mute && !G.silent; },
+  env(g, t, vol, dur) {
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  },
+  blip(freq, dur, type, vol, delay) {
+    if (!this.ok()) return;
+    const t = this.ac.currentTime + (delay || 0);
+    const o = this.ac.createOscillator(), g = this.ac.createGain();
+    o.type = type || 'sine'; o.frequency.setValueAtTime(freq, t);
+    this.env(g, t, vol == null ? 0.15 : vol, dur);
+    o.connect(g); g.connect(this.master); o.start(t); o.stop(t + dur + 0.03);
+  },
+  slide(f1, f2, dur, type, vol, delay) {
+    if (!this.ok()) return;
+    const t = this.ac.currentTime + (delay || 0);
+    const o = this.ac.createOscillator(), g = this.ac.createGain();
+    o.type = type || 'triangle'; o.frequency.setValueAtTime(f1, t);
+    o.frequency.exponentialRampToValueAtTime(Math.max(30, f2), t + dur);
+    this.env(g, t, vol == null ? 0.16 : vol, dur);
+    o.connect(g); g.connect(this.master); o.start(t); o.stop(t + dur + 0.03);
+  },
+  noise(dur, freq, vol, freq2, delay) {
+    if (!this.ok()) return;
+    const t = this.ac.currentTime + (delay || 0);
+    const s = this.ac.createBufferSource(); s.buffer = this.noiseBuf;
+    const f = this.ac.createBiquadFilter(); f.type = 'lowpass';
+    f.frequency.setValueAtTime(freq, t);
+    if (freq2) f.frequency.exponentialRampToValueAtTime(freq2, t + dur);
+    const g = this.ac.createGain();
+    this.env(g, t, vol, dur);
+    s.connect(f); f.connect(g); g.connect(this.master);
+    s.start(t, Math.random() * 0.5); s.stop(t + dur + 0.05);
+  },
+  // the named effects
+  dig()    { this.noise(0.07, 900, 0.07); },
+  pearl(n) { const f = 880 * Math.pow(1.06, Math.min(n, 20)); this.blip(f, 0.12, 'sine', 0.11); this.blip(f * 1.5, 0.1, 'triangle', 0.04, 0.03); },
+  land()   { this.slide(150, 55, 0.14, 'sine', 0.22); this.noise(0.08, 500, 0.08); },
+  clink()  { this.blip(1500, 0.05, 'triangle', 0.06); },
+  push()   { this.noise(0.14, 380, 0.13); },
+  boom()   { this.noise(0.6, 1800, 0.32, 80); this.slide(140, 35, 0.5, 'sawtooth', 0.12); },
+  open()   { [523, 659, 784, 1046, 1318].forEach((f, i) => this.blip(f, 0.25, 'triangle', 0.13, i * 0.07)); },
+  win()    { [523, 659, 784, 659, 784, 1046].forEach((f, i) => this.blip(f, 0.24, 'square', 0.06, i * 0.1)); [262, 330, 392].forEach((f, i) => this.blip(f, 0.5, 'triangle', 0.1, 0.4 + i * 0.1)); },
+  die()    { this.slide(700, 90, 0.7, 'triangle', 0.2); },
+  tick()   { this.blip(1200, 0.04, 'square', 0.05); },
+  key()    { this.blip(1320, 0.18, 'sine', 0.14); this.blip(1980, 0.22, 'sine', 0.08, 0.06); },
+  gate()   { this.slide(260, 130, 0.25, 'square', 0.08); this.noise(0.2, 700, 0.1); },
+  bump()   { this.blip(160, 0.08, 'square', 0.06); },
+  magic()  { for (let i = 0; i < 6; i++) this.blip(rnd(1200, 2600), 0.15, 'sine', 0.05, i * 0.04); },
+  grow()   { this.slide(180, 320, 0.12, 'sine', 0.05); },
+  munch()  { this.slide(260, 120, 0.1, 'square', 0.07); this.slide(240, 110, 0.1, 'square', 0.06, 0.12); },
+  slurp()  { this.slide(300, 1100, 0.14, 'sine', 0.13); },
+  place()  { this.slide(500, 260, 0.12, 'triangle', 0.12); },
+  fuse()   { this.blip(900, 0.03, 'square', 0.04); },
+  pickup() { this.slide(400, 900, 0.16, 'triangle', 0.13); },
+  appear() { this.slide(300, 1200, 0.35, 'sine', 0.12); },
+  ui()     { this.blip(700, 0.07, 'triangle', 0.1); },
+  star(n)  { this.blip(660 * Math.pow(1.26, n), 0.3, 'triangle', 0.14); },
+  chime()  { [1046, 1318, 1568].forEach((f, i) => this.blip(f, 0.3, 'sine', 0.08, i * 0.05)); }
+};
+
+const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
+// a soft, bubbly loop in A minor — 4 bars of 8 steps
+const MELODY = [69, 0, 72, 0, 76, 0, 72, 74, 72, 0, 69, 0, 65, 0, 69, 0,
+                67, 0, 72, 0, 76, 0, 79, 76, 74, 0, 71, 0, 67, 0, 0, 0];
+const ROOTS = [45, 41, 48, 43];
+const Music = {
+  timer: null, next: 0, step: 0, gain: null, bpm: 100,
+  wanted() { return Snd.ac && !save.mute && save.music && !G.silent; },
+  start() {
+    if (this.timer || !this.wanted()) return;
+    if (!this.gain) { this.gain = Snd.ac.createGain(); this.gain.gain.value = 0.5; this.gain.connect(Snd.master); }
+    this.next = Snd.ac.currentTime + 0.1;
+    this.timer = setInterval(() => this.pump(), 60);
+  },
+  stop() { if (this.timer) clearInterval(this.timer); this.timer = null; },
+  refresh() { if (this.wanted()) this.start(); else this.stop(); },
+  pump() {
+    if (!this.wanted()) { this.stop(); return; }
+    const ac = Snd.ac, spb = 60 / this.bpm / 2;
+    if (this.next < ac.currentTime) this.next = ac.currentTime + 0.05;
+    while (this.next < ac.currentTime + 0.3) { this.note(this.step, this.next, spb); this.step++; this.next += spb; }
+  },
+  note(s, t, spb) {
+    const pos = s & 7, bar = (s >> 3) & 3, phrase = (s >> 5) & 1;
+    if (pos === 0 || pos === 4) this.tone(mtof(ROOTS[bar]), t, spb * 3.6, 'sine', 0.2);
+    if (pos === 2 || pos === 6) this.tone(mtof(ROOTS[bar] + 7), t, spb * 1.5, 'sine', 0.07);
+    const m = MELODY[s & 31];
+    if (m && (phrase === 0 || pos !== 7)) this.tone(mtof(m + (phrase ? 0 : 0)), t, spb * 1.8, 'triangle', 0.06);
+    if (phrase === 1 && pos === 3) this.tone(mtof(88 + bar), t, spb * 0.6, 'sine', 0.025);
+  },
+  tone(f, t, dur, type, vol) {
+    const ac = Snd.ac, o = ac.createOscillator(), g = ac.createGain();
+    o.type = type; o.frequency.setValueAtTime(f, t);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(this.gain); o.start(t); o.stop(t + dur + 0.05);
+  }
+};
+
+/* ============================================================
+   THE LOTLS — same crew as Lotl Quest. Colour only; no powers here.
+   ============================================================ */
+const LOTLS = [
+  { id: 'mochi', name: 'Mochi', body: '#fff3f5', fin: '#ff4d4d', gill: '#ff2d55' },
+  { id: 'coal', name: 'Coal', body: '#5f5f6d', fin: '#141419', gill: '#26262e', eye: '#f6f4ff' },
+  { id: 'matcha', name: 'Matcha', body: '#c8f08a', fin: '#3faa3f', gill: '#1f7a1f',
+    unlock: { kind: 'cave', n: 3, label: 'Clear cave 3' } },
+  { id: 'storm', name: 'Storm', body: '#2a2a3a', fin: '#5b5bff', gill: '#9b7bff', eye: '#e8e6ff',
+    unlock: { kind: 'pearls', n: 200, label: 'Collect 200 pearls' } },
+  { id: 'blaze', name: 'Blaze', body: '#ffe14d', fin: '#ff8a1f', gill: '#ff5e00',
+    unlock: { kind: 'cave', n: 8, label: 'Clear cave 8' } },
+  { id: 'splash', name: 'Splash', body: '#8fd4ff', fin: '#ffe14d', gill: '#2f8fd6',
+    unlock: { kind: 'stars', n: 24, label: 'Earn 24 stars' } }
+];
+const totalStars = () => Object.values(save.stars).reduce((a, b) => a + b, 0);
+const cleared = n => save.best[n - 1] != null;
+function unlockNow(l) {
+  if (!l.unlock) return 1;
+  if (l.unlock.kind === 'cave') return cleared(l.unlock.n) ? l.unlock.n : 0;
+  if (l.unlock.kind === 'pearls') return save.pearlsAll;
+  return totalStars();
+}
+const isUnlocked = l => !l.unlock || unlockNow(l) >= l.unlock.n;
+
+/* ============================================================
+   TILES + WORLDS
+   ============================================================ */
+const TS = 56;          // tile size in logical px
+const HUD_H = 66;
+const TICK = 0.15;      // seconds per cave step
+const PUSH_TICKS = 2;   // a rock budges on the 2nd step of pushing — feels heavy, avoids accidents
+const BOMB_FUSE = 9;
+const MAGIC_TICKS = 140;
+const REVEAL_TIME = 0.9;
+const T = { EMPTY: 0, MUD: 1, WALL: 2, STEEL: 3, ROCK: 4, PEARL: 5, EXIT: 6, PLAYER: 7, CRAB: 8, JELLY: 9,
+  ALGAE: 10, MAGIC: 11, BOOM: 12, KEY: 13, GATE: 14, BOMBITEM: 15, BOMB: 16, FISH: 17, CLOCK: 18, ENTRY: 19 };
+const ROUND = new Uint8Array(32); ROUND[T.ROCK] = ROUND[T.PEARL] = ROUND[T.WALL] = 1;
+const UNBREAKABLE = new Uint8Array(32);
+UNBREAKABLE[T.STEEL] = UNBREAKABLE[T.EXIT] = UNBREAKABLE[T.KEY] = UNBREAKABLE[T.GATE] = UNBREAKABLE[T.ENTRY] = 1;
+const KEY_COLORS = ['#ff4d6d', '#ffd23f', '#3fa7ff'];
+const OPEN = new Uint8Array(32);   // mud draws an edge where it meets these
+OPEN[T.EMPTY] = OPEN[T.PLAYER] = OPEN[T.CRAB] = OPEN[T.JELLY] = OPEN[T.FISH] = OPEN[T.BOOM] = OPEN[T.BOMB] = OPEN[T.ENTRY] = 1;
+const EMBED = new Uint8Array(32); EMBED[T.ROCK] = EMBED[T.PEARL] = EMBED[T.KEY] = EMBED[T.BOMBITEM] = EMBED[T.CLOCK] = 1;
+const KEY_NAMES = ['red', 'yellow', 'blue'];
+
+const WORLDS = [
+  { name: 'Muddy Shallows', water: ['#1d7f90', '#0a3443'], mud: '#9a6440', mudDark: '#6e4128', mudLight: '#c08a5c', rim: '#dcae7c',
+    wall: '#f08a6c', wallDark: '#a84c3a', mortar: '#5e2a22', steel: '#3d4552', steelHi: '#5d6878', steelLo: '#232932',
+    rock: ['#d2d8dd', '#77818c'], chip: '#2f8fa0' },
+  { name: 'Crab Grotto', water: ['#2c63ad', '#0d1d48'], mud: '#80609a', mudDark: '#56396d', mudLight: '#a582c0', rim: '#c9a6e0',
+    wall: '#ff9f6b', wallDark: '#b8613b', mortar: '#55283a', steel: '#343a55', steelHi: '#525a7e', steelLo: '#1d2136',
+    rock: ['#d6dce8', '#7a8498'], chip: '#5b7fd6' },
+  { name: 'Kelp Caves', water: ['#1e8160', '#073428'], mud: '#7f6f3b', mudDark: '#554920', mudLight: '#a89859', rim: '#cfc07a',
+    wall: '#e8b04a', wallDark: '#9c6b1f', mortar: '#4a350e', steel: '#33463d', steelHi: '#4f6a5d', steelLo: '#1b2823',
+    rock: ['#d6dacb', '#7d8475'], chip: '#3fae6b' },
+  { name: 'Crystal Deep', water: ['#3d43a6', '#100e38'], mud: '#50709a', mudDark: '#344c72', mudLight: '#7699c4', rim: '#a8c8ee',
+    wall: '#ff7ac8', wallDark: '#a8408a', mortar: '#481c46', steel: '#2c2b4a', steelHi: '#4a4874', steelLo: '#17162b',
+    rock: ['#dde0f2', '#868aa8'], chip: '#8a6cf0' }
+];
+
+/* ============================================================
+   CAVES
+   Map legend (a steel border is added around every map):
+     ' ' water   . mud    = coral wall   # bedrock   o rock   * pearl
+     P start     X exit shell   c crab   j jellyfish   a algae
+     m glow coral   f catfish   b puffer bomb   t clock bubble
+     1 2 3 keys (red, yellow, blue)   7 8 9 their gates   ? random fill
+   `put` ops run after the map: [ch,x,y] [ch,x,y,w,h] ['row',ch,x,y,n,step]
+     ['ring',' ',x,y,w,h] = a water loop with a mud core and a mud margin
+   ============================================================ */
+const LEVELS = [
+  // ---------------- World 1: Muddy Shallows ----------------
+  { name: 'First Dig', world: 0, need: 6, time: 150,
+    hint: '{move} Grab 6 pearls, then swim into the shell!',
+    map: [
+      'P.........*...........',
+      '.....*................',
+      '..........o...........',
+      '.*.......===......*...',
+      '......................',
+      '....*.........*.......',
+      '..........*...........',
+      '.=====.........=====..',
+      '...*..........o.....*.',
+      '.....................X'] },
+  { name: 'Look Out Below', world: 0, need: 12, time: 150,
+    hint: 'Rocks fall when you dig under them. Step aside fast, or BONK!',
+    map: [
+      'P.......................',
+      '..o.o.o.o....o.o.o.o....',
+      '..*.*.*.*....*.*.*.*....',
+      '........................',
+      '......====......====....',
+      '.o..o.......o.......o...',
+      '.*..*.......*.......*...',
+      '........................',
+      '...oooo.........oooo....',
+      '...****.........****....',
+      '........................',
+      '.......................X'] },
+  { name: 'Push & Plop', world: 0, need: 14, time: 170,
+    hint: 'Walk into a rock from the side to push it. Push rocks down the holes!',
+    map: [
+      'P o    o     o    ..........',
+      '===== ==== ===== ===.*.*.*..',
+      '.*.*.   .*.  .*.   .........',
+      '.*.*.   .*.  .*.   ..o.o.o..',
+      '=====...===..===...=.*.*.*..',
+      '............................',
+      '..o..o..o..o..o..o..o..o....',
+      '..*..*..*..*..*..*..*..*....',
+      '...........................X'] },
+  { name: 'Avalanche Valley', world: 0, need: 20, time: 200, w: 36, h: 18, pad: '?', seed: 404,
+    fill: { '.': 0.64, 'o': 0.19, '*': 0.09, ' ': 0.08 },
+    hint: 'Big caves scroll! Rocks roll off other rocks... watch for avalanches.',
+    put: [['.', 0, 0, 4, 3], ['P', 1, 1], ['X', 34, 16], ['=', 5, 6, 11, 1], ['=', 19, 11, 13, 1], ['=', 27, 2, 1, 6], ['=', 10, 13, 1, 4]] },
+
+  // ---------------- World 2: Crab Grotto ----------------
+  { name: 'Crab Shack', world: 1, need: 18, time: 200,
+    hint: 'Crabs go BOOM if they touch you! Dig under a rock to drop it on a crab.',
+    map: [
+      'P..............................',
+      '.....o.........o.........o.....',
+      '.....o.........o.........o.....',
+      '.*..........*.........*......*.',
+      '.==== ====.==== ====.==== ====.',
+      '.=c      =.=c      =.=c      =.',
+      '.=       =.=       =.=       =.',
+      '.=**   **=.=**   **=.=**   **=.',
+      '.=========.=========.=========.',
+      '..*....*.....*....*.....*...*..',
+      '....o.......o........o.......o.',
+      '..*...*..*.....*..*.....*...*..',
+      '..............................X'] },
+  { name: 'Jelly Jars', world: 1, need: 24, time: 200,
+    hint: 'A jellyfish turns into 9 pearls when it goes BOOM! Drop rocks on them.',
+    map: [
+      'P..............................',
+      '...o.....o.....o.....o.....o...',
+      '...o.....o.....o.....o.....o...',
+      '......*.....*.....*.....*......',
+      '.== ==.== ==.== ==.== ==.== ==.',
+      '.=j  =.=j  =.=j  =.=j  =.=j  =.',
+      '.=   =.=   =.=   =.=   =.=   =.',
+      '.=   =.=   =.=   =.=   =.=   =.',
+      '.=====.=====.=====.=====.=====.',
+      '...............................',
+      '..*...*...*...*...*...*...*....',
+      '..............................X'] },
+  { name: 'Slurp!', world: 1, need: 13, time: 160,
+    hint: '{slurp} Grab pearls without moving. Never touch the crab!',
+    map: [
+      'P....*.....*.....*.....*......',
+      '=========================.....',
+      'c                        =....',
+      '*.*.*.*.*.*.*.*.*.*.*.*.*=....',
+      '..............................',
+      '...*..........*..........*...X'] },
+  { name: 'Glow Coral', world: 1, need: 16, time: 120,
+    hint: 'Drop rocks through the glowing coral to turn them into pearls! It only glows for a little while.',
+    map: [
+      'P..............................',
+      '.o.o.o.o.o.o.o.o.o.o.o.o.o.....',
+      '.o.o.o.o.o.o.o.o.o.o.o.o.o.....',
+      '.*.....*.....*.....*.....*.....',
+      'mmmmmmmmmmmmmmmmmmmmmmmmmmm===.',
+      '                           =...',
+      '                           ....',
+      '..............................X'] },
+
+  // ---------------- World 3: Kelp Caves ----------------
+  { name: 'Algae Garden', world: 2, need: 24, time: 220, w: 32, h: 16, pad: '?', seed: 909,
+    fill: { '.': 0.78, 'o': 0.12, '*': 0.04, ' ': 0.06 }, algaeMax: 110, algaeSlow: 240,
+    hint: 'Algae grows and grows! When it touches a jellyfish: POP, pearls! Too much algae turns to rock.',
+    put: [['.', 0, 0, 6, 4], ['P', 1, 1], ['X', 30, 14],
+      ['.', 10, 7, 5, 3], ['a', 12, 8],
+      ['ring', ' ', 20, 2, 6, 5], ['j', 20, 2],
+      ['ring', ' ', 3, 10, 7, 4], ['j', 3, 10],
+      ['ring', ' ', 22, 10, 6, 4], ['j', 22, 10]] },
+  { name: 'Catfish Cove', world: 2, need: 18, time: 200,
+    hint: 'That catfish is a pearl thief! Drop a rock on it to get every pearl back.',
+    map: [
+      'P...*..........*..........*....',
+      '..o..o..o..o..o..o..o..o..o..o.',
+      '...............................',
+      '..                           ..',
+      '..   *       *       *       ..',
+      '..  ===     ===     ===      ..',
+      '..                     f     ..',
+      '..       *       *           ..',
+      '..      ===     ===          ..',
+      '..                           ..',
+      '..*.*.*.*.*.*.*.*.*.*.*.*.*.*..',
+      '..............................X'] },
+  { name: 'Key Shells', world: 2, need: 14, time: 200,
+    hint: 'Grab a key to open the gate of the same color. Pearls are hiding inside!',
+    map: [
+      'P......=*.*.*=........=*.*.*=..',
+      '.......=.*.*.=........=.*.*.=..',
+      '.......===7===........===8===..',
+      '....*.......*.......*.....*....',
+      '...1......o.......o.......o....',
+      '..=====.......=====............',
+      '..........2....................',
+      '.==9==.........................',
+      '.=*.*=.........................',
+      '.=.*.=......o.o.o.o.o..........',
+      '.=*.*=..................3.....X',
+      '.=====.........................'] },
+  { name: 'Puffer Power', world: 2, need: 16, time: 200,
+    hint: '{bomb} Swim away fast. It blasts coral walls!',
+    map: [
+      'P..b...........................',
+      '...............................',
+      '...=======......=======........',
+      '...=*****=......=*****=.....b..',
+      '...=*****=......=*****=........',
+      '...=======......=======........',
+      '.....*.........*........*......',
+      '....b........=======...........',
+      '.............=c    =...........',
+      '.............=  ***=...........',
+      '.............=======..........X',
+      '.......*..............*........'] },
+
+  // ---------------- World 4: Crystal Deep ----------------
+  { name: 'Jelly Jamboree', world: 3, need: 28, time: 240, w: 38, h: 20, pad: '?', seed: 1313,
+    fill: { '.': 0.67, 'o': 0.18, '*': 0.05, ' ': 0.10 }, algaeMax: 100,
+    hint: 'Jellies everywhere! Rocks or algae will pop them into pearls.',
+    put: [['.', 0, 0, 5, 4], ['P', 1, 1], ['X', 36, 18],
+      ['ring', ' ', 8, 3, 6, 4], ['j', 8, 3],
+      ['ring', ' ', 24, 2, 6, 4], ['j', 24, 2],
+      ['ring', ' ', 14, 12, 7, 4], ['j', 14, 12],
+      ['ring', ' ', 29, 12, 6, 5], ['j', 29, 12],
+      ['=', 2, 9, 9, 1], ['=', 20, 8, 12, 1],
+      ['.', 3, 14, 3, 3], ['a', 4, 15]] },
+  { name: 'Crab Catacombs', world: 3, need: 32, time: 240, w: 38, h: 20, pad: '?', seed: 1414,
+    fill: { '.': 0.70, 'o': 0.13, '*': 0.10, ' ': 0.07 },
+    hint: 'Tunnels full of crabs! Squash them, and use the glowing coral to make pearls.',
+    put: [['.', 0, 0, 5, 4], ['P', 1, 1], ['X', 36, 18],
+      ['ring', ' ', 7, 5, 8, 4], ['c', 7, 5],
+      ['ring', ' ', 22, 3, 8, 4], ['c', 22, 3],
+      ['ring', ' ', 26, 12, 8, 5], ['c', 26, 12],
+      ['.', 3, 12, 16, 8], ['row', 'o', 4, 13, 7, 2], ['m', 4, 15, 14, 1], [' ', 4, 16, 14, 2],
+      ['=', 12, 0, 1, 4], ['=', 30, 9, 7, 1]] },
+  { name: 'Rock Slide', world: 3, need: 36, time: 170, w: 38, h: 20, pad: '?', seed: 1515,
+    fill: { '.': 0.50, 'o': 0.28, '*': 0.12, ' ': 0.10 },
+    hint: 'Rocks everywhere! Move fast and grab the clock bubbles for extra time.',
+    put: [['.', 0, 0, 4, 4], ['P', 1, 1], ['X', 36, 18], ['t', 18, 9], ['t', 30, 3],
+      ['=', 6, 5, 10, 1], ['=', 22, 14, 10, 1], ['=', 14, 10, 1, 6]] },
+  { name: 'The Deep Vault', world: 3, need: 40, time: 300, w: 40, h: 22, pad: '?', seed: 1616,
+    fill: { '.': 0.68, 'o': 0.15, '*': 0.07, ' ': 0.10 }, algaeMax: 80,
+    hint: 'The final vault! Find the red key, use your puffers, and watch out for the thief.',
+    put: [['.', 0, 0, 5, 4], ['P', 1, 1], ['X', 38, 20],
+      ['=', 16, 0, 9, 5], ['*', 17, 1, 7, 3], ['7', 20, 4], ['.', 15, 5, 11, 1],
+      ['.', 32, 14, 3, 3], ['1', 33, 15],
+      ['b', 6, 10], ['b', 35, 4], ['t', 21, 19],
+      ['.', 2, 13, 14, 8], [' ', 3, 14, 12, 5], ['row', '*', 3, 18, 6, 2], ['=', 5, 16, 3, 1], ['*', 6, 15], ['f', 9, 15],
+      ['row', 'o', 4, 12, 5, 2],
+      ['ring', ' ', 27, 8, 6, 4], ['j', 27, 8],
+      ['ring', ' ', 8, 6, 5, 3], ['j', 8, 6],
+      ['ring', ' ', 30, 17, 6, 3], ['c', 30, 17],
+      ['.', 19, 8, 7, 7], ['row', 'o', 20, 9, 3, 2], ['m', 19, 11, 7, 1], [' ', 19, 12, 7, 2],
+      ['.', 35, 8, 3, 3], ['a', 36, 9]] }
+];
+
+const CH = { ' ': T.EMPTY, '.': T.MUD, '=': T.WALL, '#': T.STEEL, 'o': T.ROCK, '*': T.PEARL, 'X': T.EXIT, 'P': T.ENTRY,
+  'c': T.CRAB, 'j': T.JELLY, 'a': T.ALGAE, 'm': T.MAGIC, 'f': T.FISH, 'b': T.BOMBITEM, 't': T.CLOCK,
+  '1': T.KEY, '2': T.KEY, '3': T.KEY, '7': T.GATE, '8': T.GATE, '9': T.GATE };
+
+/* build the char grid for a level (interior only), then wrap it in steel */
+function buildGrid(L, idx) {
+  const rows = L.map || [];
+  const iw = L.w || Math.max(...rows.map(r => r.length));
+  const ih = L.h || rows.length;
+  const rand = mulberry32((L.seed || (idx + 1) * 7919) >>> 0);
+  const fill = L.fill || { '.': 0.7, 'o': 0.14, '*': 0.08, ' ': 0.08 };
+  const fillKeys = Object.keys(fill), fillSum = fillKeys.reduce((a, k) => a + fill[k], 0);
+  const randomCh = () => { let r = rand() * fillSum; for (const k of fillKeys) { r -= fill[k]; if (r <= 0) return k; } return '.'; };
+  const g = [];
+  const isRand = [];
+  for (let y = 0; y < ih; y++) {
+    g.push([]); isRand.push([]);
+    for (let x = 0; x < iw; x++) {
+      let ch = (rows[y] && rows[y][x] != null) ? rows[y][x] : (L.pad || '.');
+      const r = ch === '?';
+      if (r) ch = randomCh();
+      g[y].push(ch); isRand[y].push(r);
+    }
+  }
+  const set = (x, y, ch) => { if (x >= 0 && y >= 0 && x < iw && y < ih) { g[y][x] = ch; isRand[y][x] = false; } };
+  for (const p of (L.put || [])) {
+    if (p[0] === 'row') { for (let k = 0; k < p[4]; k++) set(p[2] + k * p[5], p[3], p[1]); }
+    else if (p[0] === 'ring') {
+      const [, ch, x, y, w, h] = p;
+      for (let yy = y - 1; yy <= y + h; yy++) for (let xx = x - 1; xx <= x + w; xx++) set(xx, yy, '.');
+      for (let yy = y; yy < y + h; yy++) for (let xx = x; xx < x + w; xx++)
+        if (yy === y || yy === y + h - 1 || xx === x || xx === x + w - 1) set(xx, yy, ch);
+    } else {
+      const [ch, x, y, w = 1, h = 1] = p;
+      for (let yy = y; yy < y + h; yy++) for (let xx = x; xx < x + w; xx++) set(xx, yy, ch);
+    }
+  }
+  // keep random rocks off the lotl's head at the start
+  for (let y = 0; y < ih; y++) for (let x = 0; x < iw; x++) if (g[y][x] === 'P') {
+    for (let yy = y - 2; yy <= y + 1; yy++) for (let xx = x - 1; xx <= x + 1; xx++)
+      if (yy >= 0 && yy < ih && xx >= 0 && xx < iw && isRand[yy][xx]) g[yy][xx] = '.';
+  }
+  return { iw, ih, g };
+}
+
+/* ============================================================
+   GAME STATE
+   ============================================================ */
+const G = {
+  screen: 'title', time: 0, frame: 0, paused: false, silent: false,
+  parts: [], floats: [], toast: null, flash: 0, shake: 0,
+  dirStack: [], queuedDir: -1, bombQueued: false,
+  stick: null, holds: {}, press: null, touchMode: false,
+  cavesSel: 0, helpFrom: 'title', newLotl: null, lotlPreview: 0, motes: []
+};
+let C = null;   // the current cave
+let OFF = [0, 0, 0, 0];   // neighbour offsets: up, right, down, left
+
+function newCave(idx) {
+  const L = LEVELS[idx];
+  const { iw, ih, g } = buildGrid(L, idx);
+  const w = iw + 2, h = ih + 2, n = w * h;
+  const c = {
+    idx, L, w, h, n,
+    t: new Uint8Array(n), d: new Int16Array(n), aux: new Int16Array(n), fall: new Uint8Array(n),
+    face: new Int8Array(n), roll: new Float32Array(n),
+    stamp: new Int32Array(n).fill(-1), from: new Int32Array(n).fill(-1), fromTick: new Int32Array(n).fill(-9),
+    born: new Int32Array(n).fill(-99), reveal: new Float32Array(n),
+    tick: 0, acc: 0, pearls: 0, need: L.need, time: L.time, timeLeft: L.time, score: 0,
+    keys: [0, 0, 0], bombs: 0, hasBombs: false, exitOpen: false,
+    magic: { state: 'dormant', t: 0 }, algaeFast: false, algaeOpen: false, algaeCount: 0,
+    pending: [], sfx: {}, phase: 'reveal', phaseT: 0, entry: -1, exit: -1,
+    player: { i: -1, alive: true, face: 1, lastDir: 1, pushTarget: -1, pushCount: 0, idle: 0, cause: '', lastBump: -1, moveTick: -9 },
+    chain: 0, chainT: 0, camX: 0, camY: 0, hintT: 0, hintGone: false, warned: -1, result: null,
+    pearlsSeen: 0
+  };
+  const rand = mulberry32(idx * 31 + 5);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = y * w + x;
+    c.reveal[i] = rand();
+    if (x === 0 || y === 0 || x === w - 1 || y === h - 1) { c.t[i] = T.STEEL; continue; }
+    const ch = g[y - 1][x - 1];
+    const tt = CH[ch] != null ? CH[ch] : T.MUD;
+    c.t[i] = tt;
+    if (tt === T.KEY) c.d[i] = +ch - 1;
+    if (tt === T.GATE) c.d[i] = +ch - 7;
+    if (tt === T.CRAB || tt === T.JELLY) c.d[i] = 3;
+    if (tt === T.FISH) { c.d[i] = 1; c.face[i] = 1; }
+    if (tt === T.ENTRY) c.entry = i;
+    if (tt === T.EXIT) c.exit = i;
+    if (tt === T.BOMBITEM) c.hasBombs = true;
+    if (tt === T.ROCK) c.roll[i] = rand() * TAU;
+  }
+  return c;
+}
+
+function startCave(idx) {
+  C = newCave(idx);
+  OFF = [-C.w, 1, C.w, -1];
+  G.screen = 'play'; G.paused = false;
+  G.parts = []; G.floats = []; G.toast = null; G.flash = 0; G.shake = 0;
+  G.queuedDir = -1; G.bombQueued = false;
+  snapCamera();
+}
+
+/* ============================================================
+   CAVE SIMULATION — one step every TICK seconds, scanned top-left
+   to bottom-right like the old cave diggers. The lotl moves first so
+   a dodge always counts.
+   ============================================================ */
+function setCell(i, type, d) {
+  const c = C;
+  c.t[i] = type; c.d[i] = d || 0; c.aux[i] = 0; c.fall[i] = 0;
+  c.stamp[i] = c.tick; c.from[i] = -1; c.born[i] = c.tick;
+}
+function move(a, b) {
+  const c = C;
+  c.t[b] = c.t[a]; c.d[b] = c.d[a]; c.aux[b] = c.aux[a]; c.fall[b] = c.fall[a];
+  c.face[b] = c.face[a]; c.roll[b] = c.roll[a]; c.born[b] = c.born[a];
+  c.stamp[b] = c.tick; c.from[b] = a; c.fromTick[b] = c.tick;
+  c.t[a] = T.EMPTY; c.d[a] = 0; c.aux[a] = 0; c.fall[a] = 0; c.from[a] = -1;
+}
+const sfx = name => { if (C) C.sfx[name] = (C.sfx[name] || 0) + 1; };
+function flushSfx() {
+  const s = C.sfx;
+  for (const k in s) {
+    if (k === 'pearl') Snd.pearl(C.chain);
+    else if (Snd[k]) Snd[k]();
+  }
+  C.sfx = {};
+}
+
+function stepCave() {
+  const c = C;
+  c.tick++;
+  if (c.pending.length) { const list = c.pending; c.pending = []; for (const p of list) explodeAt(p.i, p.pearl); }
+  if (c.magic.state === 'active' && --c.magic.t <= 0) c.magic.state = 'spent';
+  c.algaeOpen = false; c.algaeCount = 0;
+  if (c.phase === 'play' && c.player.alive && c.t[c.player.i] === T.PLAYER) playerUpdate(c.player.i);
+  const w = c.w, t = c.t, tick = c.tick;
+  for (let y = 1; y < c.h - 1; y++) for (let x = 1; x < w - 1; x++) {
+    const i = y * w + x;
+    if (c.stamp[i] === tick) continue;
+    switch (t[i]) {
+      case T.ROCK: case T.PEARL: fallUpdate(i); break;
+      case T.CRAB: enemyUpdate(i, T.CRAB); break;
+      case T.JELLY: enemyUpdate(i, T.JELLY); break;
+      case T.FISH: fishUpdate(i); break;
+      case T.ALGAE: algaeUpdate(i); break;
+      case T.BOOM: if (++c.d[i] >= 3) setCell(i, c.aux[i]); break;
+      case T.BOMB: if (--c.d[i] <= 0) { c.player.cause = 'bomb'; explodeAt(i, false); } else if (c.d[i] <= 4) sfx('fuse'); break;
+    }
+  }
+  if (c.algaeCount > 0) {
+    if (!c.algaeOpen) convertAlgae(T.PEARL);
+    else if (c.algaeCount >= (c.L.algaeMax || 120)) convertAlgae(T.ROCK);
+  }
+  if (!c.algaeFast && tick > (c.L.algaeSlow || 220)) c.algaeFast = true;
+  flushSfx();
+}
+
+function fallUpdate(i) {
+  const c = C, t = c.t, b = i + c.w, tb = t[b];
+  if (tb === T.EMPTY) { c.fall[i] = 1; move(i, b); return; }
+  if (c.fall[i]) {
+    if (tb === T.PLAYER) {
+      if (t[i] === T.PEARL) { collectPearl(i); setCell(i, T.EMPTY); floatText(b, 'CATCH!', '#fff7c2'); return; }   // pearls land in your arms
+      c.player.cause = 'rock'; explodeAt(b, false); return;
+    }
+    if (tb === T.CRAB || tb === T.BOMB) { explodeAt(b, false); return; }
+    if (tb === T.JELLY || tb === T.FISH) { explodeAt(b, true); return; }
+    if (tb === T.MAGIC && c.magic.state !== 'spent') { magicPass(i); return; }
+  }
+  if (ROUND[tb] && !c.fall[b]) {
+    if (t[i - 1] === T.EMPTY && t[b - 1] === T.EMPTY) { c.fall[i] = 1; move(i, i - 1); c.roll[i - 1] -= Math.PI / 2; return; }
+    if (t[i + 1] === T.EMPTY && t[b + 1] === T.EMPTY) { c.fall[i] = 1; move(i, i + 1); c.roll[i + 1] += Math.PI / 2; return; }
+  }
+  if (c.fall[i]) {
+    c.fall[i] = 0;
+    if (t[i] === T.ROCK) { sfx('land'); G.shake = Math.max(G.shake, 2.5); dust(i); }
+    else sfx('clink');
+  }
+}
+
+function magicPass(i) {
+  const c = C, m = i + c.w, out = m + c.w;
+  if (c.magic.state === 'dormant') {
+    c.magic.state = 'active'; c.magic.t = c.L.magicTime || MAGIC_TICKS;
+    showToast('The coral is glowing!', '#8ff7ff');
+  }
+  const nt = c.t[i] === T.ROCK ? T.PEARL : T.ROCK;
+  setCell(i, T.EMPTY);
+  if (c.t[out] === T.EMPTY) { setCell(out, nt); c.fall[out] = 1; c.from[out] = i; c.fromTick[out] = c.tick; }
+  sparkle(m, 8, '#bffcff');
+  sfx('magic');
+}
+
+function enemyUpdate(i, kind) {
+  const c = C, t = c.t;
+  for (let k = 0; k < 4; k++) {
+    const n = t[i + OFF[k]];
+    if (n === T.PLAYER || n === T.ALGAE) {
+      if (n === T.PLAYER) c.player.cause = kind === T.CRAB ? 'crab' : 'jelly';
+      explodeAt(i, kind === T.JELLY);
+      return;
+    }
+  }
+  // crabs hug the wall on their left, jellies on their right
+  const d = c.d[i], turn = kind === T.CRAB ? 3 : 1;
+  const pref = (d + turn) & 3;
+  if (t[i + OFF[pref]] === T.EMPTY) { c.d[i] = pref; setFace(i, pref); move(i, i + OFF[pref]); return; }
+  if (t[i + OFF[d]] === T.EMPTY) { setFace(i, d); move(i, i + OFF[d]); return; }
+  c.d[i] = (d + 4 - turn) & 3;
+}
+const setFace = (i, dir) => { if (dir === 1) C.face[i] = 1; else if (dir === 3) C.face[i] = -1; };
+
+/* the catfish: a rival pearl collector. Swims only in open water. */
+const bfsPrev = { arr: null, q: null };
+function fishUpdate(i) {
+  const c = C, t = c.t;
+  if (c.tick & 1) return;          // half speed
+  for (let k = 0; k < 4; k++) {
+    const n = i + OFF[k];
+    if (t[n] === T.PEARL && !c.fall[n]) {
+      const eaten = c.aux[i] + 1;
+      setCell(n, T.EMPTY); setFace(i, k); move(i, n); c.aux[n] = eaten; c.d[n] = k;
+      sfx('munch'); floatText(n, 'MUNCH', '#ffcf8a');
+      return;
+    }
+  }
+  let dir = fishPath(i);
+  if (dir < 0) {
+    const d = c.d[i];
+    if (t[i + OFF[d]] === T.EMPTY && Math.random() < 0.75) dir = d;
+    else {
+      const opts = [0, 1, 2, 3].filter(k => t[i + OFF[k]] === T.EMPTY);
+      dir = opts.length ? pick(opts) : -1;
+    }
+  }
+  if (dir >= 0 && t[i + OFF[dir]] === T.EMPTY) { c.d[i] = dir; setFace(i, dir); move(i, i + OFF[dir]); }
+}
+function fishPath(start) {
+  const c = C, t = c.t, n = c.n;
+  if (!bfsPrev.arr || bfsPrev.arr.length !== n) { bfsPrev.arr = new Int32Array(n); bfsPrev.q = new Int32Array(n); }
+  const prev = bfsPrev.arr, q = bfsPrev.q;
+  prev.fill(-2);
+  let qh = 0, qt = 0;
+  q[qt++] = start; prev[start] = -1;
+  let found = -1, seen = 0;
+  while (qh < qt && seen < 260) {
+    const cur = q[qh++]; seen++;
+    for (let k = 0; k < 4; k++) {
+      const nb = cur + OFF[k];
+      if (t[nb] === T.PEARL && !c.fall[nb] && cur !== start) { found = cur; break; }
+      if (t[nb] === T.EMPTY && prev[nb] === -2) { prev[nb] = cur; q[qt++] = nb; }
+    }
+    if (found >= 0) break;
+  }
+  if (found < 0) return -1;
+  let cur = found;
+  while (prev[cur] !== start && prev[cur] >= 0) cur = prev[cur];
+  for (let k = 0; k < 4; k++) if (start + OFF[k] === cur) return k;
+  return -1;
+}
+
+function algaeUpdate(i) {
+  const c = C, t = c.t;
+  c.algaeCount++;
+  let open = false;
+  for (let k = 0; k < 4; k++) { const n = t[i + OFF[k]]; if (n === T.EMPTY || n === T.MUD) { open = true; break; } }
+  if (!open) return;
+  c.algaeOpen = true;
+  if (Math.random() < (c.algaeFast ? 0.11 : 0.025)) {
+    const n = i + OFF[(Math.random() * 4) | 0];
+    if (t[n] === T.EMPTY || t[n] === T.MUD) { setCell(n, T.ALGAE); if (Math.random() < 0.3) sfx('grow'); }
+  }
+}
+function convertAlgae(type) {
+  const c = C;
+  let n = 0;
+  for (let i = 0; i < c.n; i++) if (c.t[i] === T.ALGAE) { setCell(i, type); n++; if (n % 3 === 0) sparkle(i, 2, type === T.PEARL ? '#fff' : '#cfd6dc'); }
+  if (type === T.PEARL) { showToast('The algae turned into pearls!', '#c7ffb0'); Snd.chime(); G.flash = 0.4; }
+  else { showToast('Too much algae! It turned to rock!', '#ffd0a0'); Snd.land(); G.shake = 8; }
+}
+
+function explodeAt(ci, pearl) {
+  const c = C, w = c.w, t = c.t;
+  const res = pearl ? T.PEARL : T.EMPTY;
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    const n = ci + dx + dy * w, tn = t[n];
+    if (UNBREAKABLE[tn]) continue;
+    if (n !== ci) {
+      if (tn === T.CRAB || tn === T.BOMB) c.pending.push({ i: n, pearl: false });
+      else if (tn === T.JELLY || tn === T.FISH) c.pending.push({ i: n, pearl: true });
+    }
+    if (tn === T.FISH) {
+      const got = c.aux[n];
+      if (got > 0) { c.pearls += got; c.score += got * 10; floatText(n, '+' + got + ' pearls back!', '#fff7c2'); checkExit(); }
+      c.score += 50;
+    }
+    if (tn === T.CRAB) c.score += 25;
+    if (tn === T.JELLY) c.score += 50;
+    if (tn === T.PLAYER) killPlayer(c.player.cause || 'boom');
+    setCell(n, T.BOOM); c.aux[n] = res;
+  }
+  const [px, py] = cellCenter(ci);
+  for (let k = 0; k < 26; k++) {
+    const a = rnd(0, TAU), s = rnd(60, 260);
+    G.parts.push({ x: px, y: py, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: rnd(0.4, 0.9), max: 0.9, size: rnd(4, 11),
+      color: pearl ? pick(['#ffffff', '#ffd6f5', '#d9c8ff']) : pick(['#ffffff', '#cdeffd', '#9fd8ee']), grav: -60, kind: 'bubble' });
+  }
+  G.shake = Math.max(G.shake, 9);
+  sfx('boom');
+}
+
+function killPlayer(cause) {
+  const c = C, P = c.player;
+  if (!P.alive) return;
+  P.alive = false; P.cause = cause;
+  c.phase = 'dead'; c.phaseT = 0;
+  save.tries[c.idx] = (save.tries[c.idx] || 0) + 1; persist();
+  Snd.die();
+}
+
+function takeDir() {
+  if (G.queuedDir >= 0) { const d = G.queuedDir; G.queuedDir = -1; return d; }
+  if (G.stick && G.stick.dir >= 0) return G.stick.dir;
+  if (G.dirStack.length) return G.dirStack[G.dirStack.length - 1];
+  return -1;
+}
+const grabHeld = () => keysDown.has('Space') || keysDown.has('ShiftLeft') || keysDown.has('ShiftRight') || Object.values(G.holds).includes('grab');
+
+function playerUpdate(i) {
+  const c = C, P = c.player, t = c.t;
+  c.stamp[i] = c.tick;
+  if (G.bombQueued) {
+    G.bombQueued = false;
+    if (c.bombs > 0) {
+      const ti = i + OFF[P.lastDir];
+      if (t[ti] === T.EMPTY || t[ti] === T.MUD) { setCell(ti, T.BOMB, BOMB_FUSE); c.bombs--; sfx('place'); }
+      else { floatText(i, 'No room!', '#ffd0d0'); sfx('bump'); }
+    } else { floatText(i, 'No puffers!', '#ffd0d0'); }
+  }
+  const dir = takeDir();
+  if (dir < 0) { P.pushTarget = -1; P.idle++; return; }
+  P.idle = 0; P.lastDir = dir;
+  if (dir === 1) P.face = 1; else if (dir === 3) P.face = -1;
+  const ti = i + OFF[dir], tt = t[ti];
+  const grab = grabHeld();
+  let ok = false;
+  switch (tt) {
+    case T.EMPTY: ok = !grab; break;
+    case T.MUD: ok = true; digFx(ti, dir); sfx('dig'); break;
+    case T.PEARL: ok = true; collectPearl(ti); break;
+    case T.KEY: ok = true; c.keys[c.d[ti]] = 1; sfx('key'); showToast('Got the ' + KEY_NAMES[c.d[ti]] + ' key!', KEY_COLORS[c.d[ti]]); sparkle(ti, 10, KEY_COLORS[c.d[ti]]); break;
+    case T.BOMBITEM: ok = true; c.bombs++; sfx('pickup'); floatText(ti, '+1 puffer', '#ffe27a'); break;
+    case T.CLOCK: ok = true; c.timeLeft += 15; sfx('chime'); floatText(ti, '+15 sec', '#bff6ff'); sparkle(ti, 10, '#bff6ff'); break;
+    case T.GATE:
+      if (c.keys[c.d[ti]]) { ok = true; sfx('gate'); sparkle(ti, 12, KEY_COLORS[c.d[ti]]); }
+      else { if (P.lastBump !== ti) { floatText(ti, 'Need the ' + KEY_NAMES[c.d[ti]] + ' key!', '#ffe0e0'); sfx('bump'); } P.lastBump = ti; }
+      break;
+    case T.EXIT:
+      if (c.exitOpen && !grab) { setCell(i, T.EMPTY); winCave(); return; }
+      if (!c.exitOpen && P.lastBump !== ti) { floatText(ti, (c.need - c.pearls) + ' more pearls!', '#ffe0e0'); sfx('bump'); P.lastBump = ti; }
+      break;
+    case T.ROCK:
+      if ((dir === 1 || dir === 3) && !c.fall[ti] && !grab) {
+        const b = ti + OFF[dir];
+        if (t[b] === T.EMPTY) {
+          if (P.pushTarget === ti) P.pushCount++; else { P.pushTarget = ti; P.pushCount = 1; }
+          if (P.pushCount >= PUSH_TICKS) {
+            move(ti, b); c.roll[b] += dir === 1 ? Math.PI / 2 : -Math.PI / 2;
+            P.pushTarget = -1; sfx('push');
+            move(i, ti); P.i = ti; P.moveTick = c.tick;
+          }
+          return;
+        }
+      }
+      break;
+  }
+  P.pushTarget = -1;
+  if (tt !== T.GATE && tt !== T.EXIT) P.lastBump = -1;
+  if (!ok) return;
+  if (grab) {
+    if (tt !== T.EMPTY) { setCell(ti, T.EMPTY); sfx('slurp'); P.slurp = { at: G.time, dir }; }
+    return;
+  }
+  move(i, ti); P.i = ti; P.moveTick = c.tick;
+}
+
+function collectPearl(i) {
+  const c = C;
+  c.pearls++;
+  c.chain = c.chainT > 0 ? c.chain + 1 : 0;
+  c.chainT = 1.6;
+  c.score += c.pearls > c.need ? 20 : 10;
+  sfx('pearl');
+  sparkle(i, 9, '#fff6d8');
+  checkExit();
+}
+function checkExit() {
+  const c = C;
+  if (!c.exitOpen && c.pearls >= c.need) {
+    c.exitOpen = true; G.flash = 0.6;
+    Snd.open();
+    showToast('The shell is open! Swim in!', '#ffe27a');
+  }
+}
+
+function winCave() {
+  const c = C, idx = c.idx;
+  c.phase = 'won'; c.phaseT = 0; c.acc = TICK * 0.999;
+  const timeBonus = Math.ceil(c.timeLeft) * 5;
+  const total = c.score + timeBonus;
+  const starPearls = Math.ceil(c.need * 1.4);
+  let stars = 1;
+  if (c.pearls >= starPearls) stars++;
+  if (c.timeLeft >= c.time * 0.35) stars++;
+  const before = LOTLS.filter(isUnlocked).map(l => l.id);
+  save.pearlsAll += c.pearls;
+  save.best[idx] = Math.max(save.best[idx] || 0, total);
+  save.stars[idx] = Math.max(save.stars[idx] || 0, stars);
+  save.unlocked = Math.max(save.unlocked, Math.min(LEVELS.length, idx + 2));
+  if (idx === LEVELS.length - 1) save.champion = true;
+  const fresh = LOTLS.filter(l => isUnlocked(l) && !before.includes(l.id));
+  persist();
+  c.result = { timeBonus, total, stars, starPearls, fresh, shown: 0 };
+  Snd.win();
+  confetti();
+}
+
+/* ============================================================
+   PARTICLES + FLOATING TEXT
+   ============================================================ */
+function cellCenter(i) { return [(i % C.w) * TS + TS / 2, ((i / C.w) | 0) * TS + TS / 2]; }
+function sparkle(i, n, color) {
+  const [x, y] = cellCenter(i);
+  for (let k = 0; k < n; k++) {
+    const a = rnd(0, TAU), s = rnd(40, 150);
+    G.parts.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: rnd(0.35, 0.7), max: 0.7, size: rnd(3, 6), color, grav: 0, kind: 'star' });
+  }
+}
+function digFx(i, dir) {
+  const [x, y] = cellCenter(i), pal = WORLDS[C.L.world];
+  for (let k = 0; k < 7; k++) {
+    G.parts.push({ x: x + rnd(-14, 14), y: y + rnd(-14, 14), vx: rnd(-90, 90) + (dir === 1 ? 70 : dir === 3 ? -70 : 0), vy: rnd(-120, 10),
+      life: rnd(0.3, 0.55), max: 0.55, size: rnd(3, 6), color: pick([pal.mud, pal.mudLight, pal.mudDark]), grav: 420, kind: 'chunk' });
+  }
+}
+function dust(i) {
+  const [x, y] = cellCenter(i);
+  for (let k = 0; k < 6; k++)
+    G.parts.push({ x: x + rnd(-18, 18), y: y + TS * 0.4, vx: rnd(-70, 70), vy: rnd(-40, -5), life: rnd(0.3, 0.6), max: 0.6, size: rnd(4, 8), color: 'rgba(230,240,240,0.7)', grav: 0, kind: 'puff' });
+}
+function floatText(i, text, color) {
+  const [x, y] = cellCenter(i);
+  G.floats.push({ x, y: y - 20, text, color, life: 1.3 });
+}
+function showToast(text, color) { G.toast = { text, color, t: 0 }; }
+function confetti() {
+  for (let k = 0; k < 90; k++)
+    G.parts.push({ screen: true, x: rnd(0, W), y: rnd(-80, -10), vx: rnd(-40, 40), vy: rnd(80, 240), life: rnd(1.8, 3.2), max: 3.2,
+      size: rnd(5, 10), color: pick(['#ff7aa8', '#ffe27a', '#8ff7ff', '#b8ff8a', '#ffffff', '#c9a6ff']), grav: 60, kind: 'confetti', spin: rnd(0, TAU) });
+}
+
+/* ============================================================
+   INPUT — keyboard, touch joystick, buttons
+   ============================================================ */
+const keysDown = new Set();
+const KEYDIR = { ArrowUp: 0, KeyW: 0, ArrowRight: 1, KeyD: 1, ArrowDown: 2, KeyS: 2, ArrowLeft: 3, KeyA: 3 };
+let buttons = [];
+let kbFocus = 0;
+
+window.addEventListener('keydown', e => {
+  Snd.boot();
+  const code = e.code;
+  if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab'].includes(code)) e.preventDefault();
+  const fresh = !keysDown.has(code);
+  keysDown.add(code);
+  if (G.screen === 'play' && C) {
+    const overlay = playOverlay();
+    if (!overlay) {
+      if (KEYDIR[code] != null) {
+        const d = KEYDIR[code];
+        if (fresh) { G.dirStack = G.dirStack.filter(x => x !== d); G.dirStack.push(d); if (C.phase === 'play') G.queuedDir = d; }
+        dismissHint();
+        return;
+      }
+      if (fresh && (code === 'KeyB' || code === 'KeyX' || code === 'Enter')) { G.bombQueued = true; return; }
+      if (fresh && (code === 'Escape' || code === 'KeyP')) { G.paused = true; kbFocus = 0; Snd.ui(); return; }
+      if (fresh && code === 'KeyR' && C.phase === 'play') { startCave(C.idx); return; }
+      return;
+    }
+  }
+  if (!fresh) return;
+  menuKey(code);
+});
+window.addEventListener('keyup', e => {
+  keysDown.delete(e.code);
+  const d = KEYDIR[e.code];
+  if (d != null) G.dirStack = G.dirStack.filter(x => x !== d);
+});
+window.addEventListener('blur', () => { keysDown.clear(); G.dirStack = []; G.holds = {}; G.stick = null; });
+document.addEventListener('visibilitychange', () => { if (document.hidden && G.screen === 'play' && C && C.phase === 'play') G.paused = true; });
+
+// keyboard on menus: arrows move focus between buttons, Enter presses, Esc backs out
+function menuKey(code) {
+  const navs = buttons.filter(b => b.nav !== false && b.act && !b.hold);
+  if (code === 'Escape') { const back = buttons.find(b => b.back); if (back) { Snd.ui(); back.act(); } return; }
+  if (G.screen === 'title') {
+    if (code === 'ArrowLeft') { cycleLotl(-1); return; }
+    if (code === 'ArrowRight') { cycleLotl(1); return; }
+    if (code === 'KeyH' || code === 'Slash') { openHelp(); return; }
+    if (code === 'KeyC' || code === 'KeyL') { openCaves(); return; }
+  }
+  if (G.screen === 'caves') {
+    const n = LEVELS.length;
+    if (code === 'ArrowRight') { G.cavesSel = (G.cavesSel + 1) % n; Snd.ui(); return; }
+    if (code === 'ArrowLeft') { G.cavesSel = (G.cavesSel + n - 1) % n; Snd.ui(); return; }
+    if (code === 'ArrowDown') { G.cavesSel = Math.min(n - 1, G.cavesSel + 4); Snd.ui(); return; }
+    if (code === 'ArrowUp') { G.cavesSel = Math.max(0, G.cavesSel - 4); Snd.ui(); return; }
+    if (code === 'Enter' || code === 'Space') { if (G.cavesSel < save.unlocked) { Snd.ui(); startCave(G.cavesSel); } return; }
+    return;
+  }
+  if (!navs.length) return;
+  if (code === 'ArrowDown' || code === 'ArrowRight' || code === 'Tab' || code === 'KeyS' || code === 'KeyD') { kbFocus = (kbFocus + 1) % navs.length; Snd.ui(); }
+  else if (code === 'ArrowUp' || code === 'ArrowLeft' || code === 'KeyW' || code === 'KeyA') { kbFocus = (kbFocus + navs.length - 1) % navs.length; Snd.ui(); }
+  else if (code === 'Enter' || code === 'Space') { const b = navs[kbFocus % navs.length]; if (b) { Snd.ui(); b.act(); } }
+  else if (code === 'KeyR' && G.screen === 'play') { const r = buttons.find(b => b.id === 'retry'); if (r) r.act(); }
+}
+
+function hitButton(x, y) {
+  for (let k = buttons.length - 1; k >= 0; k--) {
+    const b = buttons[k];
+    if (b.r ? (x - b.x) ** 2 + (y - b.y) ** 2 <= b.r * b.r : (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h)) return b;
+  }
+  return null;
+}
+cvs.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  Snd.boot();
+  cvs.focus();
+  if (e.pointerType === 'touch' || e.pointerType === 'pen') G.touchMode = true;
+  const p = toWorld(e.clientX, e.clientY);
+  const b = hitButton(p.x, p.y);
+  if (b) {
+    if (b.hold) { G.holds[e.pointerId] = b.id; if (b.act) b.act(); }
+    else G.press = { id: b.id, pid: e.pointerId };
+    return;
+  }
+  if (G.screen === 'play' && C && !playOverlay()) {
+    dismissHint();
+    if (!G.stick) G.stick = { pid: e.pointerId, ox: p.x, oy: p.y, x: p.x, y: p.y, dir: -1 };
+  }
+});
+cvs.addEventListener('pointermove', e => {
+  const s = G.stick;
+  if (!s || s.pid !== e.pointerId) return;
+  const p = toWorld(e.clientX, e.clientY);
+  s.x = p.x; s.y = p.y;
+  let dx = s.x - s.ox, dy = s.y - s.oy;
+  const dist = Math.hypot(dx, dy);
+  const MAXR = 70;
+  if (dist > MAXR) { s.ox = s.x - dx / dist * MAXR; s.oy = s.y - dy / dist * MAXR; dx = s.x - s.ox; dy = s.y - s.oy; }
+  let dir = -1;
+  if (dist > 18) dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 1 : 3) : (dy > 0 ? 2 : 0);
+  if (dir >= 0 && dir !== s.dir && C && C.phase === 'play') G.queuedDir = dir;
+  s.dir = dir;
+});
+function pointerEnd(e) {
+  if (G.stick && G.stick.pid === e.pointerId) G.stick = null;
+  if (G.holds[e.pointerId]) delete G.holds[e.pointerId];
+  if (G.press && G.press.pid === e.pointerId) {
+    const p = toWorld(e.clientX, e.clientY);
+    const b = hitButton(p.x, p.y);
+    const id = G.press.id;
+    G.press = null;
+    if (b && b.id === id && b.act && e.type === 'pointerup') { Snd.ui(); b.act(); }
+  }
+}
+cvs.addEventListener('pointerup', pointerEnd);
+cvs.addEventListener('pointercancel', pointerEnd);
+cvs.addEventListener('contextmenu', e => e.preventDefault());
+
+/* ============================================================
+   SCREEN FLOW
+   ============================================================ */
+function playOverlay() {
+  if (!C) return null;
+  if (G.paused) return 'paused';
+  if (C.phase === 'won' && C.phaseT > 0.9) return 'won';
+  if (C.phase === 'dead' && C.phaseT > 1.5) return 'dead';
+  if (C.phase === 'timeup' && C.phaseT > 0.7) return 'timeup';
+  return null;
+}
+function dismissHint() { if (C && C.phase === 'play' && C.hintT > 0.6) C.hintGone = true; }
+function goTitle() { G.screen = 'title'; G.paused = false; kbFocus = 0; C = null; }
+function openCaves() { G.screen = 'caves'; G.paused = false; G.cavesSel = Math.min(save.unlocked - 1, LEVELS.length - 1); C = null; kbFocus = 0; Snd.ui(); }
+function openHelp() { G.helpFrom = G.screen === 'play' ? 'play' : G.screen; G.screen = 'help'; kbFocus = 0; Snd.ui(); }
+function closeHelp() { G.screen = G.helpFrom === 'play' && C ? 'play' : (G.helpFrom === 'caves' ? 'caves' : 'title'); kbFocus = 0; }
+function nextCaveIndex() {
+  for (let i = 0; i < LEVELS.length; i++) if (save.best[i] == null && i < save.unlocked) return i;
+  return Math.min(save.unlocked, LEVELS.length) - 1;
+}
+function cycleLotl(dir) {
+  const n = LOTLS.length;
+  let k = save.lotl;
+  for (let s = 0; s < n; s++) { k = (k + dir + n) % n; if (isUnlocked(LOTLS[k])) break; }
+  save.lotl = k; persist(); Snd.ui();
+}
+
+/* ============================================================
+   UPDATE
+   ============================================================ */
+function update(dt) {
+  if (G.freeze) return;   // debug: LotlDash.G.freeze = true holds the frame for screenshots
+  G.time += dt; G.frame++;
+  if (G.flash > 0) G.flash = Math.max(0, G.flash - dt * 1.4);
+  if (G.shake > 0) G.shake = Math.max(0, G.shake - dt * 30);
+  if (G.toast) { G.toast.t += dt; if (G.toast.t > 2.6) G.toast = null; }
+  for (const p of G.parts) { p.life -= dt; p.vy += (p.grav || 0) * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= (1 - dt * 1.5); if (p.spin != null) p.spin += dt * 6; }
+  G.parts = G.parts.filter(p => p.life > 0);
+  for (const f of G.floats) { f.life -= dt; f.y -= 36 * dt; }
+  G.floats = G.floats.filter(f => f.life > 0);
+  if (G.screen === 'play' && C) updatePlay(dt);
+}
+
+function updatePlay(dt) {
+  const c = C;
+  if (G.paused) return;
+  c.phaseT += dt;
+  if (c.chainT > 0) c.chainT -= dt;
+  if (c.phase === 'reveal' && c.phaseT >= REVEAL_TIME) { c.phase = 'entry'; c.phaseT = 0; }
+  if (c.phase === 'entry' && c.phaseT >= 0.8) {
+    c.phase = 'play'; c.phaseT = 0;
+    setCell(c.entry, T.PLAYER); c.player.i = c.entry;
+    Snd.appear(); sparkle(c.entry, 14, '#ffd6e6');
+    G.queuedDir = -1;
+  }
+  if (c.phase === 'play') {
+    c.hintT += dt;
+    const before = Math.ceil(c.timeLeft);
+    c.timeLeft -= dt;
+    const now = Math.ceil(c.timeLeft);
+    if (now !== before && now <= 10 && now > 0) Snd.tick();
+    if (c.timeLeft <= 0) {
+      c.timeLeft = 0; c.phase = 'timeup'; c.phaseT = 0; c.player.cause = 'time';
+      save.tries[c.idx] = (save.tries[c.idx] || 0) + 1; persist();
+      Snd.die();
+    }
+  }
+  if (c.phase === 'entry' || c.phase === 'play' || c.phase === 'dead' || c.phase === 'timeup') {
+    c.acc += dt;
+    let guard = 0;
+    while (c.acc >= TICK && guard++ < 4) { c.acc -= TICK; stepCave(); if (c.phase === 'won') break; }
+    if (c.acc > TICK) c.acc = TICK * 0.99;
+  }
+  updateCamera(dt);
+}
+
+function playerPixel() {
+  const c = C;
+  if (c.player.i >= 0 && c.t[c.player.i] === T.PLAYER) return objPos(c.player.i, frac());
+  const i = c.player.i >= 0 ? c.player.i : c.entry;
+  return cellCenter(i);
+}
+const frac = () => C.phase === 'won' ? 1 : clamp(C.acc / TICK, 0, 1);
+function camTarget() {
+  const c = C, vw = W, vh = H - HUD_H, cw = c.w * TS, chh = c.h * TS;
+  const [px, py] = playerPixel();
+  const tx = cw <= vw ? (cw - vw) / 2 : clamp(px - vw / 2, 0, cw - vw);
+  const ty = chh <= vh ? (chh - vh) / 2 : clamp(py - vh / 2, 0, chh - vh);
+  return [tx, ty];
+}
+function snapCamera() { const [tx, ty] = camTarget(); C.camX = tx; C.camY = ty; }
+function updateCamera(dt) {
+  const [tx, ty] = camTarget();
+  const k = Math.min(1, dt * 6);
+  C.camX += (tx - C.camX) * k; C.camY += (ty - C.camY) * k;
+}
+function objPos(i, f) {
+  const c = C, x = i % c.w, y = (i / c.w) | 0;
+  if (c.fromTick[i] === c.tick && c.from[i] >= 0) {
+    const a = c.from[i], ax = a % c.w, ay = (a / c.w) | 0;
+    return [(ax + (x - ax) * f) * TS + TS / 2, (ay + (y - ay) * f) * TS + TS / 2];
+  }
+  return [x * TS + TS / 2, y * TS + TS / 2];
+}
+
+/* ============================================================
+   SPRITES — static tiles are pre-drawn at device resolution
+   ============================================================ */
+const SPR = {};
+function makeSprite(fn) {
+  const S = Math.max(16, Math.round(TS * scale * DPR));
+  const cv = document.createElement('canvas'); cv.width = cv.height = S;
+  const g = cv.getContext('2d'); g.scale(S / TS, S / TS);
+  fn(g);
+  return cv;
+}
+function ensureSprites(world) {
+  const key = world + ':' + Math.round(TS * scale * DPR);
+  if (spritesFor === key) return;
+  spritesFor = key;
+  const p = WORLDS[world];
+  SPR.mud = [0, 1, 2, 3].map(v => makeSprite(g => drawMudTile(g, p, v)));
+  SPR.wall = makeSprite(g => drawWallTile(g, p));
+  SPR.steel = makeSprite(g => drawSteelTile(g, p));
+  SPR.rock = makeSprite(g => drawRockTile(g, p));
+  SPR.pearl = makeSprite(g => drawPearlTile(g));
+}
+function rr(g, x, y, w, h, r) {
+  g.beginPath();
+  g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath();
+}
+function drawMudTile(g, p, v) {
+  g.fillStyle = p.mud; g.fillRect(0, 0, TS, TS);
+  const r = mulberry32(v * 977 + 13);
+  for (let k = 0; k < 11; k++) {
+    g.globalAlpha = 0.35 + r() * 0.4;
+    g.fillStyle = r() < 0.55 ? p.mudDark : p.mudLight;
+    g.beginPath(); g.ellipse(4 + r() * (TS - 8), 4 + r() * (TS - 8), 2 + r() * 4, 1.5 + r() * 2.5, r() * 3, 0, TAU); g.fill();
+  }
+  g.globalAlpha = 0.5; g.fillStyle = p.mudLight;
+  for (let k = 0; k < 3; k++) { g.beginPath(); g.arc(6 + r() * (TS - 12), 6 + r() * (TS - 12), 1.4, 0, TAU); g.fill(); }
+  g.globalAlpha = 1;
+}
+function drawWallTile(g, p) {
+  g.fillStyle = p.mortar; g.fillRect(0, 0, TS, TS);
+  const bh = TS / 2;
+  for (let row = 0; row < 2; row++) {
+    const off = row ? -TS / 4 : 0;
+    for (let k = -1; k < 3; k++) {
+      const x = off + k * TS / 2 + 1.5, y = row * bh + 1.5;
+      g.fillStyle = p.wall; rr(g, x, y, TS / 2 - 3, bh - 3, 6); g.fill();
+      g.fillStyle = 'rgba(255,255,255,0.22)'; rr(g, x + 3, y + 2, TS / 2 - 9, 4, 2); g.fill();
+      g.fillStyle = p.wallDark;
+      g.beginPath(); g.arc(x + TS / 8, y + bh * 0.55, 1.8, 0, TAU); g.arc(x + TS / 4 + 2, y + bh * 0.62, 1.4, 0, TAU); g.fill();
+    }
+  }
+}
+function drawSteelTile(g, p) {
+  g.fillStyle = p.steel; g.fillRect(0, 0, TS, TS);
+  g.fillStyle = p.steelHi; g.fillRect(0, 0, TS, 4); g.fillRect(0, 0, 4, TS);
+  g.fillStyle = p.steelLo; g.fillRect(0, TS - 4, TS, 4); g.fillRect(TS - 4, 0, 4, TS);
+  g.strokeStyle = p.steelLo; g.lineWidth = 2; g.lineCap = 'round';
+  g.beginPath(); g.moveTo(12, 16); g.lineTo(22, 26); g.lineTo(19, 38); g.moveTo(34, 10); g.lineTo(40, 22); g.stroke();
+  g.fillStyle = p.steelHi;
+  for (const [x, y] of [[10, 10], [TS - 10, 10], [10, TS - 10], [TS - 10, TS - 10]]) { g.beginPath(); g.arc(x, y, 2.4, 0, TAU); g.fill(); }
+}
+function drawRockTile(g, p) {
+  const cx = TS / 2, cy = TS / 2, r = TS * 0.44;
+  g.beginPath();
+  for (let k = 0; k <= 14; k++) {
+    const a = k / 14 * TAU, w = 1 + Math.sin(a * 3 + 1) * 0.05 + Math.sin(a * 5) * 0.03;
+    const x = cx + Math.cos(a) * r * w, y = cy + Math.sin(a) * r * w * 0.94;
+    k ? g.lineTo(x, y) : g.moveTo(x, y);
+  }
+  g.closePath();
+  const gr = g.createRadialGradient(cx - r * 0.35, cy - r * 0.4, r * 0.1, cx, cy, r * 1.05);
+  gr.addColorStop(0, p.rock[0]); gr.addColorStop(1, p.rock[1]);
+  g.fillStyle = gr; g.fill();
+  g.strokeStyle = '#2b2f36'; g.lineWidth = 2.6; g.stroke();
+  g.fillStyle = 'rgba(255,255,255,0.45)';
+  g.beginPath(); g.ellipse(cx - r * 0.35, cy - r * 0.42, r * 0.28, r * 0.15, -0.5, 0, TAU); g.fill();
+  g.fillStyle = 'rgba(40,50,60,0.25)';
+  g.beginPath(); g.arc(cx + r * 0.3, cy + r * 0.25, r * 0.12, 0, TAU); g.arc(cx - r * 0.1, cy + r * 0.45, r * 0.07, 0, TAU); g.arc(cx + r * 0.45, cy - r * 0.2, r * 0.06, 0, TAU); g.fill();
+}
+function drawPearlTile(g) {
+  const cx = TS / 2, cy = TS / 2, r = TS * 0.3;
+  const glow = g.createRadialGradient(cx, cy, r * 0.6, cx, cy, r * 1.6);
+  glow.addColorStop(0, 'rgba(255,240,255,0.35)'); glow.addColorStop(1, 'rgba(255,240,255,0)');
+  g.fillStyle = glow; g.beginPath(); g.arc(cx, cy, r * 1.6, 0, TAU); g.fill();
+  const gr = g.createRadialGradient(cx - r * 0.35, cy - r * 0.4, r * 0.05, cx, cy, r);
+  gr.addColorStop(0, '#ffffff'); gr.addColorStop(0.45, '#fbeefa'); gr.addColorStop(0.8, '#dcc8f2'); gr.addColorStop(1, '#b7a2dc');
+  g.fillStyle = gr; g.beginPath(); g.arc(cx, cy, r, 0, TAU); g.fill();
+  g.strokeStyle = '#7d6aa6'; g.lineWidth = 1.6; g.stroke();
+  g.fillStyle = 'rgba(255,200,240,0.45)'; g.beginPath(); g.ellipse(cx + r * 0.2, cy + r * 0.35, r * 0.45, r * 0.2, -0.3, 0, TAU); g.fill();
+  g.fillStyle = '#fff'; g.beginPath(); g.ellipse(cx - r * 0.35, cy - r * 0.38, r * 0.22, r * 0.14, -0.6, 0, TAU); g.fill();
+}
+
+/* ============================================================
+   DRAWING — creatures and things that move
+   ============================================================ */
+const INK = '#20141f';
+function wobbleCircle(x, y, r, seed) {
+  ctx.beginPath();
+  for (let i = 0; i <= 18; i++) {
+    const a = (i / 18) * TAU, w = 1 + Math.sin(a * 3 + seed) * 0.035 + Math.sin(a * 5 - seed) * 0.025;
+    const px = x + Math.cos(a) * r * w, py = y + Math.sin(a) * r * w;
+    i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+  }
+  ctx.closePath();
+}
+
+// the lotl, straight from Lotl Quest (minus the trident)
+function drawLotl(x, y, r, c, o) {
+  o = o || {};
+  const t = o.t || 0, flip = o.flip ? -1 : 1;
+  ctx.save();
+  ctx.translate(x, y); ctx.scale(flip, 1);
+  if (o.tilt) ctx.rotate(o.tilt);
+  if (o.squash) ctx.scale(1 + o.squash, 1 - o.squash);
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  const wag = Math.sin(t * 0.12) * 0.35;
+  ctx.save(); ctx.rotate(wag * 0.25);
+  ctx.fillStyle = c.fin;
+  ctx.beginPath();
+  ctx.moveTo(-r * 0.5, -r * 0.15);
+  ctx.quadraticCurveTo(-r * 1.7, -r * 0.9, -r * 2.05, -r * 0.1);
+  ctx.quadraticCurveTo(-r * 1.7, r * 0.85, -r * 0.5, r * 0.25);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = INK; ctx.lineWidth = r * 0.09; ctx.stroke();
+  ctx.restore();
+  for (const side of [-1, 1]) {
+    for (let i = 0; i < 3; i++) {
+      const base = side * (Math.PI / 2) + (i - 1) * 0.46 * side;
+      const wig = Math.sin(t * 0.11 + i * 1.3 + (side > 0 ? 1 : 0)) * 0.12;
+      const bx = Math.cos(base) * r * 0.7, by = Math.sin(base) * r * 0.7;
+      const len = r * (0.9 - Math.abs(i - 1) * 0.12);
+      ctx.save(); ctx.translate(bx, by); ctx.rotate(base + wig);
+      ctx.strokeStyle = c.gill; ctx.lineWidth = r * 0.14;
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(len * 0.55, len * 0.22, len, 0); ctx.stroke();
+      ctx.fillStyle = c.gill; ctx.beginPath(); ctx.arc(len, 0, r * 0.16, 0, TAU); ctx.fill();
+      ctx.restore();
+    }
+  }
+  ctx.strokeStyle = INK; ctx.lineWidth = r * 0.11;
+  const step = o.walk || 0;
+  for (const s of [-1, 1]) {
+    ctx.beginPath(); ctx.moveTo(-r * 0.1, s * r * 0.55);
+    ctx.lineTo(-r * 0.35 + Math.sin(step + s) * r * 0.2, s * r * 0.95 + Math.sin(t * 0.1 + s) * 2);
+    ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(r * 0.35, s * r * 0.6);
+    ctx.lineTo(r * 0.55 - Math.sin(step + s) * r * 0.2, s * r * 0.98);
+    ctx.stroke();
+  }
+  ctx.fillStyle = c.body; wobbleCircle(0, 0, r, o.seed || 1); ctx.fill();
+  ctx.strokeStyle = INK; ctx.lineWidth = r * 0.1; ctx.stroke();
+  ctx.fillStyle = 'rgba(255,120,160,0.35)';
+  ctx.beginPath(); ctx.ellipse(r * 0.15, r * 0.3, r * 0.22, r * 0.14, 0, 0, TAU); ctx.fill();
+  const eyeInk = c.eye || INK;
+  const blink = o.blink;
+  for (const s of [-1, 1]) {
+    ctx.save(); ctx.translate(r * 0.32, s * r * 0.3);
+    const ew = r * 0.24, eh = blink ? r * 0.05 : r * 0.2;
+    ctx.fillStyle = eyeInk;
+    ctx.beginPath(); ctx.roundRect ? ctx.roundRect(-ew / 2, -eh / 2, ew, eh, r * 0.05) : ctx.rect(-ew / 2, -eh / 2, ew, eh); ctx.fill();
+    if (!blink) { ctx.fillStyle = c.eye ? INK : '#fff'; ctx.beginPath(); ctx.arc(ew * 0.18, -eh * 0.18, r * 0.05, 0, TAU); ctx.fill(); }
+    ctx.restore();
+  }
+  ctx.strokeStyle = eyeInk; ctx.lineWidth = r * 0.07;
+  if (o.mouth === 'o') { ctx.fillStyle = '#7a1f3a'; ctx.beginPath(); ctx.arc(r * 0.62, 0, r * 0.14, 0, TAU); ctx.fill(); ctx.stroke(); }
+  else { ctx.beginPath(); ctx.arc(r * 0.5, 0, r * 0.24, -0.7, 0.7); ctx.stroke(); }
+  if (o.tongue) {
+    ctx.strokeStyle = '#ff7aa0'; ctx.lineWidth = r * 0.16;
+    ctx.beginPath(); ctx.moveTo(r * 0.7, 0); ctx.lineTo(r * 0.7 + o.tongue, 0); ctx.stroke();
+    ctx.fillStyle = '#ff7aa0'; ctx.beginPath(); ctx.arc(r * 0.7 + o.tongue, 0, r * 0.16, 0, TAU); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawPlayer(cx, cy) {
+  const c = C, P = c.player, lotl = LOTLS[save.lotl] || LOTLS[0];
+  const moving = c.tick - P.moveTick <= 1;
+  const bob = moving ? 0 : Math.sin(G.time * 3) * 1.5;
+  let tilt = 0;
+  if (P.lastDir === 0) tilt = -0.55; else if (P.lastDir === 2) tilt = 0.55;
+  let tongue = 0, tdir = P.lastDir;
+  if (P.slurp && G.time - P.slurp.at < 0.25) {
+    const k = (G.time - P.slurp.at) / 0.25;
+    tongue = Math.sin(k * Math.PI) * TS * 0.75; tdir = P.slurp.dir;
+    if (tdir === 0) tilt = -1.2; else if (tdir === 2) tilt = 1.2;
+  }
+  const flip = tdir === 1 ? false : tdir === 3 ? true : P.face < 0;
+  const blink = (G.time % 3.7) < 0.12;
+  drawLotl(cx, cy + bob, TS * 0.3, lotl, { t: G.frame, flip, tilt, walk: moving ? G.time * 18 : 0, blink, tongue, mouth: P.idle > 60 ? 'o' : null });
+  if (P.idle > 20 && Math.random() < 0.02) G.parts.push({ x: cx + (P.face > 0 ? 10 : -10), y: cy - 14, vx: rnd(-8, 8), vy: -40, life: 1.4, max: 1.4, size: rnd(3, 5), color: 'rgba(220,250,255,0.8)', grav: -10, kind: 'bubble' });
+}
+
+function drawCrab(cx, cy, i, scl) {
+  const s = TS * (scl || 1), t = G.time * 8 + i;
+  ctx.save(); ctx.translate(cx, cy + Math.sin(t) * 1.2);
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = '#8a2414'; ctx.lineWidth = s * 0.06;
+  for (const side of [-1, 1]) for (let k = 0; k < 3; k++) {
+    const kick = Math.sin(t + k * 1.6 + side) * s * 0.04;
+    ctx.beginPath(); ctx.moveTo(side * s * 0.15, s * 0.04 + k * s * 0.05);
+    ctx.quadraticCurveTo(side * s * 0.36, s * 0.02 + k * s * 0.07, side * s * 0.42, s * 0.24 + k * s * 0.03 + kick); ctx.stroke();
+  }
+  const snap = (Math.sin(t * 0.7) + 1) * 0.5;
+  for (const side of [-1, 1]) {
+    ctx.strokeStyle = '#8a2414'; ctx.lineWidth = s * 0.07;
+    ctx.beginPath(); ctx.moveTo(side * s * 0.2, -s * 0.02); ctx.quadraticCurveTo(side * s * 0.36, -s * 0.12, side * s * 0.33, -s * 0.24); ctx.stroke();
+    ctx.save(); ctx.translate(side * s * 0.33, -s * 0.28);
+    ctx.fillStyle = '#ff5a33'; ctx.strokeStyle = INK; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(0, 0, s * 0.11, Math.PI * 0.15 + snap * 0.3, Math.PI * 1.85 - snap * 0.3); ctx.lineTo(0, 0); ctx.closePath();
+    ctx.rotate(side * -0.4 - Math.PI / 2); ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
+  ctx.fillStyle = '#ff6a3d'; ctx.strokeStyle = INK; ctx.lineWidth = 2.4;
+  ctx.beginPath(); ctx.ellipse(0, s * 0.05, s * 0.27, s * 0.19, 0, 0, TAU); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.25)'; ctx.beginPath(); ctx.ellipse(-s * 0.08, -s * 0.03, s * 0.12, s * 0.05, -0.3, 0, TAU); ctx.fill();
+  for (const side of [-1, 1]) {
+    ctx.strokeStyle = INK; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(side * s * 0.08, -s * 0.08); ctx.lineTo(side * s * 0.1, -s * 0.2); ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(side * s * 0.1, -s * 0.22, s * 0.065, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = INK; ctx.beginPath(); ctx.arc(side * s * 0.1 + s * 0.015, -s * 0.22, s * 0.03, 0, TAU); ctx.fill();
+  }
+  ctx.strokeStyle = INK; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0, s * 0.06, s * 0.07, 0.2, Math.PI - 0.2); ctx.stroke();
+  ctx.restore();
+}
+
+function drawJelly(cx, cy, i, scl) {
+  const s = TS * (scl || 1), t = G.time * 3 + i * 0.7;
+  const pulse = Math.sin(t * 2) * 0.06;
+  ctx.save(); ctx.translate(cx, cy - s * 0.06 + Math.sin(t) * 2);
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = 'rgba(214,150,255,0.85)'; ctx.lineWidth = s * 0.05;
+  for (let k = -2; k <= 2; k++) {
+    ctx.beginPath(); ctx.moveTo(k * s * 0.07, s * 0.02);
+    for (let j = 1; j <= 4; j++) ctx.lineTo(k * s * 0.07 + Math.sin(t * 3 + j + k) * s * 0.04, s * 0.02 + j * s * 0.09);
+    ctx.stroke();
+  }
+  const g = ctx.createRadialGradient(-s * 0.08, -s * 0.12, s * 0.02, 0, -s * 0.02, s * 0.34);
+  g.addColorStop(0, '#f6dcff'); g.addColorStop(0.6, '#c07cf2'); g.addColorStop(1, '#8a48d6');
+  ctx.fillStyle = g; ctx.strokeStyle = '#4a1f73'; ctx.lineWidth = 2.4;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, s * (0.32 + pulse), s * (0.28 - pulse), 0, Math.PI, 0);
+  for (let k = 4; k >= 0; k--) ctx.quadraticCurveTo(-s * 0.32 + (k + 0.5) * s * 0.128, s * 0.1, -s * 0.32 + k * s * 0.128, s * 0.04);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = INK;
+  ctx.beginPath(); ctx.arc(-s * 0.1, -s * 0.06, s * 0.04, 0, TAU); ctx.arc(s * 0.1, -s * 0.06, s * 0.04, 0, TAU); ctx.fill();
+  ctx.fillStyle = 'rgba(255,120,200,0.5)';
+  ctx.beginPath(); ctx.arc(-s * 0.17, 0, s * 0.04, 0, TAU); ctx.arc(s * 0.17, 0, s * 0.04, 0, TAU); ctx.fill();
+  ctx.strokeStyle = INK; ctx.lineWidth = 1.8; ctx.beginPath(); ctx.arc(0, -s * 0.02, s * 0.05, 0.3, Math.PI - 0.3); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.beginPath(); ctx.ellipse(-s * 0.12, -s * 0.17, s * 0.07, s * 0.035, -0.5, 0, TAU); ctx.fill();
+  ctx.restore();
+}
+
+function drawFish(cx, cy, i, face, eaten, scl) {
+  const s = TS * (scl || 1), t = G.time * 5 + i;
+  const fat = Math.min(0.12, (eaten || 0) * 0.012);
+  ctx.save(); ctx.translate(cx, cy + Math.sin(t * 0.6) * 2); ctx.scale(face < 0 ? -1 : 1, 1);
+  ctx.fillStyle = '#7d6b5a'; ctx.strokeStyle = INK; ctx.lineWidth = 2.4;
+  ctx.save(); ctx.translate(-s * 0.34, 0); ctx.rotate(Math.sin(t) * 0.3);
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-s * 0.16, -s * 0.16); ctx.lineTo(-s * 0.14, s * 0.16); ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.restore();
+  ctx.beginPath(); ctx.moveTo(-s * 0.05, -s * 0.18); ctx.quadraticCurveTo(s * 0.02, -s * 0.33, s * 0.12, -s * 0.18); ctx.fill(); ctx.stroke();
+  const g = ctx.createLinearGradient(0, -s * 0.2, 0, s * 0.25);
+  g.addColorStop(0, '#9a8670'); g.addColorStop(1, '#e8d6b8');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.ellipse(0, 0, s * (0.38 + fat), s * (0.21 + fat), 0, 0, TAU); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = 'rgba(60,40,30,0.3)';
+  for (const [x, y] of [[-0.12, -0.08], [0.02, -0.11], [-0.2, 0.02]]) { ctx.beginPath(); ctx.arc(x * s, y * s, s * 0.03, 0, TAU); ctx.fill(); }
+  ctx.strokeStyle = INK; ctx.lineWidth = 2;
+  for (const k of [-1, 1]) {
+    ctx.beginPath(); ctx.moveTo(s * 0.33, s * 0.05 * k + s * 0.03);
+    ctx.quadraticCurveTo(s * 0.48, s * 0.1 * k + s * 0.05, s * 0.5 + Math.sin(t + k) * s * 0.04, s * 0.2 * k + s * 0.06); ctx.stroke();
+  }
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(s * 0.2, -s * 0.06, s * 0.07, 0, TAU); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = INK; ctx.beginPath(); ctx.arc(s * 0.22, -s * 0.05, s * 0.035, 0, TAU); ctx.fill();
+  ctx.strokeStyle = INK; ctx.lineWidth = 2.4; ctx.beginPath(); ctx.moveTo(s * 0.21, -s * 0.15); ctx.lineTo(s * 0.29, -s * 0.12); ctx.stroke();  // a sneaky brow
+  ctx.beginPath(); ctx.arc(s * 0.3, s * 0.07, s * 0.06, 0.2, Math.PI * 0.8); ctx.stroke();
+  ctx.restore();
+  if (eaten > 0) {
+    ctx.save(); ctx.font = `800 15px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(20,10,30,0.6)'; rr(ctx, cx - 20, cy - s * 0.62, 40, 20, 10); ctx.fill();
+    ctx.fillStyle = '#fff4d6'; ctx.fillText('●' + eaten, cx, cy - s * 0.52);
+    ctx.restore();
+  }
+}
+
+function drawExit(cx, cy, open, scl) {
+  const s = TS * (scl || 1), t = G.time;
+  ctx.save(); ctx.translate(cx, cy);
+  if (open) {
+    ctx.save(); ctx.rotate(t * 0.8);
+    ctx.fillStyle = 'rgba(255,240,170,0.28)';
+    for (let k = 0; k < 8; k++) { ctx.rotate(TAU / 8); ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(s * 0.7, -s * 0.09); ctx.lineTo(s * 0.7, s * 0.09); ctx.closePath(); ctx.fill(); }
+    ctx.restore();
+    const gl = ctx.createRadialGradient(0, 0, 2, 0, 0, s * 0.6);
+    gl.addColorStop(0, 'rgba(255,250,200,0.9)'); gl.addColorStop(1, 'rgba(255,250,200,0)');
+    ctx.fillStyle = gl; ctx.beginPath(); ctx.arc(0, 0, s * 0.6, 0, TAU); ctx.fill();
+  }
+  const bob = open ? Math.sin(t * 4) * 2 : 0;
+  ctx.translate(0, bob);
+  const g = ctx.createRadialGradient(-s * 0.1, -s * 0.1, 2, 0, 0, s * 0.42);
+  if (open) { g.addColorStop(0, '#fffbe8'); g.addColorStop(0.5, '#ffd1ec'); g.addColorStop(1, '#b6a0ff'); }
+  else { g.addColorStop(0, '#c9c4cf'); g.addColorStop(1, '#6f6a7a'); }
+  ctx.fillStyle = g; ctx.strokeStyle = INK; ctx.lineWidth = 2.6;
+  ctx.beginPath(); ctx.arc(0, 0, s * 0.4, 0, TAU); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = open ? '#9a5fb8' : '#4a4652'; ctx.lineWidth = 2.4;
+  ctx.beginPath();
+  for (let a = 0; a < TAU * 2.4; a += 0.2) { const r = s * 0.36 * (1 - a / (TAU * 2.6)); const x = Math.cos(a + t * (open ? 1.5 : 0)) * r, y = Math.sin(a + t * (open ? 1.5 : 0)) * r; a ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+  ctx.stroke();
+  if (!open) {
+    ctx.fillStyle = '#2b2733'; ctx.beginPath(); ctx.arc(0, 0, s * 0.08, 0, TAU); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawMagic(cx, cy, i) {
+  const st = C ? C.magic.state : 'dormant', t = G.time;
+  const s = TS;
+  ctx.save(); ctx.translate(cx, cy);
+  ctx.fillStyle = st === 'spent' ? '#3a3f48' : '#14373f'; ctx.fillRect(-s / 2, -s / 2, s, s);
+  let col;
+  if (st === 'active') col = `hsl(${(t * 220 + i * 25) % 360},90%,70%)`;
+  else if (st === 'spent') col = '#7c8590';
+  else col = '#4fe3e0';
+  if (st === 'active') { ctx.shadowColor = col; ctx.shadowBlur = 14; }
+  ctx.strokeStyle = col; ctx.lineCap = 'round'; ctx.lineWidth = 6;
+  const sway = st === 'spent' ? 0 : Math.sin(t * 2 + i) * 3;
+  ctx.beginPath();
+  ctx.moveTo(0, s * 0.45); ctx.lineTo(sway * 0.5, 0); ctx.lineTo(sway, -s * 0.35);
+  ctx.moveTo(sway * 0.5, s * 0.05); ctx.lineTo(-s * 0.25 + sway, -s * 0.2);
+  ctx.moveTo(sway * 0.5, s * 0.12); ctx.lineTo(s * 0.26 + sway, -s * 0.12);
+  ctx.moveTo(-s * 0.25 + sway, -s * 0.2); ctx.lineTo(-s * 0.3 + sway, -s * 0.36);
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = st === 'spent' ? '#9aa2ac' : '#ffffff';
+  for (const [x, y] of [[sway, -s * 0.37], [-s * 0.3 + sway, -s * 0.38], [s * 0.26 + sway, -s * 0.14]]) { ctx.beginPath(); ctx.arc(x, y, 4, 0, TAU); ctx.fill(); }
+  ctx.restore();
+}
+
+function drawKey(cx, cy, color, scl) {
+  const s = TS * (scl || 1);
+  ctx.save(); ctx.translate(cx, cy + Math.sin(G.time * 3) * 2); ctx.rotate(-0.5);
+  ctx.fillStyle = color; ctx.strokeStyle = INK; ctx.lineWidth = 2.4;
+  ctx.beginPath(); ctx.arc(-s * 0.16, 0, s * 0.15, 0, TAU); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.rect(-s * 0.03, -s * 0.045, s * 0.36, s * 0.09); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.rect(s * 0.2, s * 0.04, s * 0.06, s * 0.1); ctx.rect(s * 0.28, s * 0.04, s * 0.05, s * 0.08); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.beginPath(); ctx.arc(-s * 0.16, 0, s * 0.06, 0, TAU); ctx.fill();
+  ctx.restore();
+  if (Math.sin(G.time * 4 + cx) > 0.92) drawStar(cx + s * 0.18, cy - s * 0.2, 5, '#fff');
+}
+function drawGate(cx, cy, color) {
+  const s = TS;
+  ctx.save(); ctx.translate(cx, cy);
+  ctx.fillStyle = '#2a2230'; ctx.fillRect(-s / 2, -s / 2, s, s);
+  ctx.fillStyle = color; ctx.strokeStyle = INK; ctx.lineWidth = 2.4;
+  rr(ctx, -s * 0.44, -s * 0.44, s * 0.88, s * 0.88, 10); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = 'rgba(0,0,0,0.3)'; ctx.lineWidth = 4;
+  for (const x of [-0.24, 0.24]) { ctx.beginPath(); ctx.moveTo(x * s, -s * 0.38); ctx.lineTo(x * s, s * 0.38); ctx.stroke(); }
+  ctx.fillStyle = INK;
+  ctx.beginPath(); ctx.arc(0, -s * 0.06, s * 0.09, 0, TAU); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(-s * 0.05, -s * 0.04); ctx.lineTo(s * 0.05, -s * 0.04); ctx.lineTo(s * 0.08, s * 0.18); ctx.lineTo(-s * 0.08, s * 0.18); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.3)'; rr(ctx, -s * 0.38, -s * 0.4, s * 0.76, s * 0.08, 4); ctx.fill();
+  ctx.restore();
+}
+function drawPuffer(cx, cy, lit, fuse, scl) {
+  const s = TS * (scl || 1), t = G.time;
+  const puff = lit ? 1 + (BOMB_FUSE - fuse) * 0.035 + Math.sin(t * 20) * 0.03 : 1;
+  const r = s * 0.25 * puff;
+  ctx.save(); ctx.translate(cx, cy + (lit ? 0 : Math.sin(t * 2.5) * 2));
+  const flashRed = lit && Math.sin(t * (10 + (BOMB_FUSE - fuse) * 3)) > 0;
+  ctx.fillStyle = flashRed ? '#ff5a4a' : '#ffd84d'; ctx.strokeStyle = INK; ctx.lineWidth = 2;
+  for (let k = 0; k < 12; k++) {
+    const a = k / 12 * TAU;
+    ctx.beginPath(); ctx.moveTo(Math.cos(a - 0.15) * r, Math.sin(a - 0.15) * r); ctx.lineTo(Math.cos(a) * r * 1.35, Math.sin(a) * r * 1.35); ctx.lineTo(Math.cos(a + 0.15) * r, Math.sin(a + 0.15) * r); ctx.fill(); ctx.stroke();
+  }
+  ctx.lineWidth = 2.4;
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.55)'; ctx.beginPath(); ctx.ellipse(0, r * 0.35, r * 0.6, r * 0.35, 0, 0, TAU); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(-r * 0.35, -r * 0.2, r * 0.22, 0, TAU); ctx.arc(r * 0.35, -r * 0.2, r * 0.22, 0, TAU); ctx.fill();
+  ctx.fillStyle = INK;
+  ctx.beginPath(); ctx.arc(-r * 0.32, -r * 0.18, r * 0.11, 0, TAU); ctx.arc(r * 0.38, -r * 0.18, r * 0.11, 0, TAU); ctx.fill();
+  ctx.beginPath(); ctx.arc(0, r * 0.22, r * 0.12, 0, TAU); ctx.fill();
+  ctx.restore();
+  if (lit) {
+    ctx.save(); ctx.font = `800 18px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const n = Math.max(1, Math.ceil(fuse / 3)) + '';
+    ctx.lineWidth = 4; ctx.strokeStyle = INK; ctx.strokeText(n, cx, cy - s * 0.42);
+    ctx.fillStyle = '#fff'; ctx.fillText(n, cx, cy - s * 0.42);
+    ctx.restore();
+  }
+}
+function drawClock(cx, cy, scl) {
+  const s = TS * (scl || 1), t = G.time;
+  ctx.save(); ctx.translate(cx, cy + Math.sin(t * 2) * 2.5);
+  const g = ctx.createRadialGradient(-s * 0.1, -s * 0.1, 2, 0, 0, s * 0.36);
+  g.addColorStop(0, 'rgba(255,255,255,0.95)'); g.addColorStop(1, 'rgba(140,220,255,0.55)');
+  ctx.fillStyle = g; ctx.strokeStyle = '#2b6a8a'; ctx.lineWidth = 2.4;
+  ctx.beginPath(); ctx.arc(0, 0, s * 0.34, 0, TAU); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = INK; ctx.lineWidth = 2.6; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(Math.cos(t * 2) * s * 0.2, Math.sin(t * 2) * s * 0.2); ctx.moveTo(0, 0); ctx.lineTo(0, -s * 0.13); ctx.stroke();
+  ctx.font = `800 13px ${FONT}`; ctx.textAlign = 'center'; ctx.fillStyle = '#1b4a66'; ctx.fillText('+15', 0, s * 0.24);
+  ctx.restore();
+}
+function drawEntry(cx, cy, k) {
+  ctx.save(); ctx.translate(cx, cy);
+  for (let n = 0; n < 3; n++) {
+    ctx.strokeStyle = `rgba(255,214,230,${0.7 - n * 0.2})`; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(0, 0, TS * (0.15 + ((G.time * 0.8 + n / 3) % 1) * 0.35), 0, TAU); ctx.stroke();
+  }
+  ctx.rotate(G.time * 3);
+  for (let n = 0; n < 5; n++) { ctx.rotate(TAU / 5); drawStar(TS * 0.25, 0, 4, '#fff'); }
+  ctx.restore();
+}
+function drawStar(x, y, r, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  for (let k = 0; k < 8; k++) { const a = k * Math.PI / 4, rr2 = k % 2 ? r * 0.35 : r; ctx.lineTo(x + Math.cos(a) * rr2, y + Math.sin(a) * rr2); }
+  ctx.closePath(); ctx.fill();
+}
+function drawBoom(cx, cy, stage, f, pearl, i) {
+  const p = clamp((stage + f) / 3, 0, 1);
+  ctx.save(); ctx.translate(cx, cy);
+  const rnd2 = mulberry32(i * 13 + 7);
+  ctx.globalAlpha = 1 - p * 0.6;
+  for (let k = 0; k < 6; k++) {
+    const a = rnd2() * TAU, d = TS * 0.25 * p * (0.5 + rnd2());
+    const r = TS * (0.18 + 0.2 * (1 - p)) * (0.6 + rnd2() * 0.6);
+    ctx.fillStyle = pearl ? pick(['#ffffff', '#ffe0f6', '#e8d8ff']) : (k % 2 ? '#e8fbff' : '#9fd8ee');
+    ctx.beginPath(); ctx.arc(Math.cos(a) * d, Math.sin(a) * d, r, 0, TAU); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  if (pearl) drawStar(0, 0, 8 + 6 * (1 - p), '#fff');
+  ctx.restore();
+}
+
+/* ============================================================
+   DRAW THE CAVE
+   ============================================================ */
+function drawWater(wd, top) {
+  const g = ctx.createLinearGradient(0, top, 0, H);
+  g.addColorStop(0, wd.water[0]); g.addColorStop(1, wd.water[1]);
+  ctx.fillStyle = g; ctx.fillRect(0, top, W, H - top);
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (let k = 0; k < 5; k++) {
+    const x = ((k * 293 + G.time * 12) % (W + 400)) - 200;
+    ctx.fillStyle = 'rgba(180,255,250,0.035)';
+    ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x + 90, top); ctx.lineTo(x + 260 + Math.sin(G.time + k) * 30, H); ctx.lineTo(x + 120, H); ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+  if (G.motes.length < 40) for (let k = 0; k < 40; k++) G.motes.push({ x: rnd(0, 1700), y: rnd(0, 720), s: rnd(1, 3), v: rnd(6, 20) });
+  ctx.fillStyle = 'rgba(220,255,250,0.22)';
+  for (const m of G.motes) {
+    const y = ((m.y - G.time * m.v) % 720 + 720) % 720;
+    if (y < top) continue;
+    ctx.beginPath(); ctx.arc((m.x + Math.sin(G.time * 0.5 + m.y) * 10) % W, y, m.s, 0, TAU); ctx.fill();
+  }
+}
+
+function drawCave() {
+  const c = C, wd = WORLDS[c.L.world];
+  ensureSprites(c.L.world);
+  drawWater(wd, HUD_H);
+  const f = frac();
+  const shx = G.shake > 0.3 ? rnd(-G.shake, G.shake) : 0, shy = G.shake > 0.3 ? rnd(-G.shake, G.shake) : 0;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, HUD_H, W, H - HUD_H); ctx.clip();
+  const ox = -c.camX + shx, oy = HUD_H - c.camY + shy;
+  ctx.translate(ox, oy);
+  const x0 = Math.max(0, Math.floor(c.camX / TS) - 1), x1 = Math.min(c.w - 1, Math.ceil((c.camX + W) / TS) + 1);
+  const y0 = Math.max(0, Math.floor(c.camY / TS) - 1), y1 = Math.min(c.h - 1, Math.ceil((c.camY + H - HUD_H) / TS) + 1);
+  const t = c.t, w = c.w;
+  const revealing = c.phase === 'reveal';
+  const rv = revealing ? c.phaseT / REVEAL_TIME : 2;
+  // pass 1: the ground
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const i = y * w + x, tt = t[i], px = x * TS, py = y * TS;
+    if (tt === T.MUD) {
+      ctx.drawImage(SPR.mud[(x * 7 + y * 13) & 3], px, py, TS + 0.6, TS + 0.6);
+      const up = t[i - w], dn = t[i + w], lf = t[i - 1], rt = t[i + 1];
+      if (OPEN[up]) { ctx.fillStyle = wd.rim; ctx.fillRect(px, py, TS, 4); }
+      if (OPEN[dn]) { ctx.fillStyle = wd.mudDark; ctx.fillRect(px, py + TS - 5, TS, 5); }
+      if (OPEN[lf]) { ctx.fillStyle = 'rgba(0,0,0,0.18)'; ctx.fillRect(px, py, 3, TS); }
+      if (OPEN[rt]) { ctx.fillStyle = 'rgba(0,0,0,0.18)'; ctx.fillRect(px + TS - 3, py, 3, TS); }
+    } else if (tt === T.WALL) ctx.drawImage(SPR.wall, px, py, TS + 0.6, TS + 0.6);
+    else if (tt === T.STEEL) ctx.drawImage(SPR.steel, px, py, TS + 0.6, TS + 0.6);
+    else if (tt === T.MAGIC) drawMagic(px + TS / 2, py + TS / 2, i);
+    else if (tt === T.GATE) drawGate(px + TS / 2, py + TS / 2, KEY_COLORS[c.d[i]]);
+    else if (tt === T.EXIT) drawExit(px + TS / 2, py + TS / 2, c.exitOpen);
+  }
+  // algae: outline pass then fill pass so the blobs merge
+  let anyAlgae = false;
+  for (let pass = 0; pass < 2; pass++) {
+    ctx.fillStyle = pass ? '#58c24e' : '#1b5a24';
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+      const i = y * w + x;
+      if (t[i] !== T.ALGAE) continue;
+      anyAlgae = true;
+      const grow = clamp((c.tick - c.born[i] + f) / 2, 0.3, 1);
+      const wob = Math.sin(G.time * 3 + i) * 2;
+      ctx.beginPath(); ctx.arc(x * TS + TS / 2, y * TS + TS / 2, (pass ? TS * 0.5 : TS * 0.58) * grow + wob, 0, TAU); ctx.fill();
+    }
+  }
+  if (anyAlgae) {
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+      const i = y * w + x;
+      if (t[i] !== T.ALGAE) continue;
+      ctx.fillStyle = '#9af07a';
+      ctx.beginPath(); ctx.arc(x * TS + TS * 0.35, y * TS + TS * 0.35, 4 + Math.sin(G.time * 4 + i) * 1.5, 0, TAU); ctx.arc(x * TS + TS * 0.65, y * TS + TS * 0.6, 2.5, 0, TAU); ctx.fill();
+      ctx.fillStyle = '#20491a';
+      if ((i * 7) % 5 === 0) { ctx.beginPath(); ctx.arc(x * TS + TS * 0.42, y * TS + TS * 0.5, 2.6, 0, TAU); ctx.arc(x * TS + TS * 0.58, y * TS + TS * 0.5, 2.6, 0, TAU); ctx.fill(); }
+    }
+  }
+  // pass 2: things that move
+  let playerAt = null;
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const i = y * w + x, tt = t[i];
+    if (tt < T.ROCK || tt === T.EXIT || tt === T.MAGIC || tt === T.GATE || tt === T.ALGAE) continue;
+    const [px, py] = objPos(i, f);
+    // things resting in the mud get a mud backing so they look embedded, not floating in a hole
+    if (EMBED[tt] && !c.fall[i] && c.fromTick[i] !== c.tick) {
+      let m = 0;
+      for (let k = 0; k < 4; k++) if (t[i + OFF[k]] === T.MUD) m++;
+      if (m >= 2 && t[i + w] !== T.EMPTY) {
+        ctx.drawImage(SPR.mud[(x * 7 + y * 13) & 3], x * TS, y * TS, TS + 0.6, TS + 0.6);
+        ctx.fillStyle = 'rgba(20,8,0,0.28)'; rr(ctx, x * TS + 3, y * TS + 3, TS - 6, TS - 6, 16); ctx.fill();
+      }
+    }
+    switch (tt) {
+      case T.ROCK: {
+        let ang = c.roll[i];
+        if (c.fromTick[i] === c.tick && c.from[i] >= 0) { const dx = x - (c.from[i] % w); if (dx) ang -= dx * (Math.PI / 2) * (1 - f); }
+        ctx.save(); ctx.translate(px, py); ctx.rotate(ang); ctx.drawImage(SPR.rock, -TS / 2, -TS / 2, TS, TS); ctx.restore();
+        break;
+      }
+      case T.PEARL:
+        ctx.drawImage(SPR.pearl, px - TS / 2, py - TS / 2, TS, TS);
+        if (((i * 37 + Math.floor(G.time * 2.5)) % 29) === 0) drawStar(px + 9, py - 9, 6, '#fff');
+        break;
+      case T.PLAYER: playerAt = [px, py]; break;
+      case T.CRAB: drawCrab(px, py, i, 1.12); break;
+      case T.JELLY: drawJelly(px, py, i, 1.2); break;
+      case T.FISH: drawFish(px, py, i, c.face[i], c.aux[i]); break;
+      case T.KEY: drawKey(px, py, KEY_COLORS[c.d[i]]); break;
+      case T.BOMBITEM: drawPuffer(px, py, false, 0); break;
+      case T.BOMB: drawPuffer(px, py, true, c.d[i]); break;
+      case T.CLOCK: drawClock(px, py); break;
+      case T.BOOM: drawBoom(px, py, c.d[i], f, c.aux[i] === T.PEARL, i); break;
+      case T.ENTRY: if (!revealing) drawEntry(px, py); break;
+    }
+  }
+  if (playerAt) drawPlayer(playerAt[0], playerAt[1]);
+  if (c.phase === 'won' && c.phaseT < 0.8 && c.exit >= 0) {
+    const [ex, ey] = cellCenter(c.exit), k = c.phaseT / 0.8;
+    ctx.save(); ctx.globalAlpha = 1 - k;
+    drawLotl(ex, ey, TS * 0.3 * (1 - k * 0.8), LOTLS[save.lotl] || LOTLS[0], { t: G.frame, tilt: k * 8 });
+    ctx.restore();
+  }
+  // particles (world space)
+  for (const p of G.parts) if (!p.screen) drawPart(p);
+  for (const fl of G.floats) {
+    ctx.save(); ctx.globalAlpha = clamp(fl.life * 1.5, 0, 1);
+    ctx.font = `800 20px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.lineWidth = 5; ctx.strokeStyle = INK; ctx.lineJoin = 'round'; ctx.strokeText(fl.text, fl.x, fl.y);
+    ctx.fillStyle = fl.color; ctx.fillText(fl.text, fl.x, fl.y);
+    ctx.restore();
+  }
+  // the reveal: cave tiles flip open in random order
+  if (revealing) {
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+      const i = y * w + x;
+      if (c.reveal[i] > rv) ctx.drawImage(SPR.steel, x * TS, y * TS, TS + 0.6, TS + 0.6);
+    }
+  }
+  ctx.restore();
+}
+function drawPart(p) {
+  const a = clamp(p.life / (p.max * 0.5), 0, 1);
+  ctx.globalAlpha = a;
+  if (p.kind === 'star') drawStar(p.x, p.y, p.size, p.color);
+  else if (p.kind === 'bubble') { ctx.strokeStyle = p.color; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, TAU); ctx.stroke(); }
+  else if (p.kind === 'confetti') { ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.spin); ctx.fillStyle = p.color; ctx.fillRect(-p.size / 2, -p.size / 4, p.size, p.size / 2); ctx.restore(); }
+  else { ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, TAU); ctx.fill(); }
+  ctx.globalAlpha = 1;
+}
+
+/* ============================================================
+   UI BITS
+   ============================================================ */
+function txt(s, x, y, size, color, align, weight, strokeW) {
+  ctx.font = `${weight || 800} ${size}px ${FONT}`;
+  ctx.textAlign = align || 'center'; ctx.textBaseline = 'middle';
+  if (strokeW) { ctx.lineJoin = 'round'; ctx.lineWidth = strokeW; ctx.strokeStyle = INK; ctx.strokeText(s, x, y); }
+  ctx.fillStyle = color; ctx.fillText(s, x, y);
+}
+function fitSize(s, maxW, size, weight) {
+  ctx.font = `${weight || 800} ${size}px ${FONT}`;
+  const w = ctx.measureText(s).width;
+  return w > maxW ? Math.floor(size * maxW / w) : size;
+}
+function button(id, x, y, w, h, label, o) {
+  o = o || {};
+  const b = { id, x, y, w, h, act: o.act, hold: o.hold, back: o.back, nav: o.nav };
+  buttons.push(b);
+  const navs = buttons.filter(q => q.nav !== false && q.act && !q.hold);
+  const focused = !G.touchMode && o.nav !== false && !o.hold && navs[kbFocus % Math.max(1, navs.length)] === b;
+  const pressed = (G.press && G.press.id === id) || (o.hold && Object.values(G.holds).includes(id));
+  const col = o.color || '#ff7aa8', dk = o.dark || 'rgba(0,0,0,0.35)';
+  ctx.save();
+  const dy = pressed ? 4 : 0;
+  ctx.fillStyle = dk; rr(ctx, x, y + 6, w, h, Math.min(22, h / 2)); ctx.fill();
+  ctx.fillStyle = col; rr(ctx, x, y + dy, w, h, Math.min(22, h / 2)); ctx.fill();
+  ctx.strokeStyle = INK; ctx.lineWidth = 3; ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.25)'; rr(ctx, x + 8, y + dy + 5, w - 16, Math.min(10, h * 0.2), 5); ctx.fill();
+  if (focused) { ctx.strokeStyle = '#fff6b0'; ctx.lineWidth = 4; rr(ctx, x - 5, y - 5 + dy, w + 10, h + 10, Math.min(26, h / 2 + 5)); ctx.stroke(); }
+  const size = fitSize(label, w - 24, o.size || 30);
+  txt(label, x + w / 2, y + h / 2 + dy + 2, size, o.fg || '#fff', 'center', 800, o.fg ? 0 : 5);
+  ctx.restore();
+  return b;
+}
+function roundButton(id, x, y, r, label, o) {
+  o = o || {};
+  buttons.push({ id, x, y, r, act: o.act, hold: o.hold, nav: false });
+  const pressed = (G.press && G.press.id === id) || (o.hold && Object.values(G.holds).includes(id));
+  ctx.save();
+  ctx.globalAlpha = o.alpha == null ? 1 : o.alpha;
+  ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.beginPath(); ctx.arc(x, y + 5, r, 0, TAU); ctx.fill();
+  ctx.fillStyle = pressed ? (o.pressColor || '#fff') : (o.color || 'rgba(255,255,255,0.85)');
+  ctx.beginPath(); ctx.arc(x, y + (pressed ? 3 : 0), r, 0, TAU); ctx.fill();
+  ctx.strokeStyle = INK; ctx.lineWidth = 3; ctx.stroke();
+  txt(label, x, y + (pressed ? 3 : 0) + 1, o.size || r * 0.8, o.fg || INK, 'center', 800, 0);
+  if (o.sub) txt(o.sub, x, y + r + 14, 15, '#fff', 'center', 800, 4);
+  ctx.restore();
+}
+function panel(x, y, w, h, color) {
+  ctx.fillStyle = 'rgba(0,0,0,0.35)'; rr(ctx, x, y + 8, w, h, 28); ctx.fill();
+  ctx.fillStyle = color || '#fff4f8'; rr(ctx, x, y, w, h, 28); ctx.fill();
+  ctx.strokeStyle = INK; ctx.lineWidth = 4; ctx.stroke();
+}
+function dim(a) { ctx.fillStyle = `rgba(5,15,25,${a})`; ctx.fillRect(0, 0, W, H); }
+function pearlIcon(x, y, r) {
+  ensureSprites(C ? C.L.world : 0);
+  ctx.drawImage(SPR.pearl, x - r * 1.67, y - r * 1.67, r * 3.33, r * 3.33);
+}
+function drawStarShape(x, y, r, filled) {
+  ctx.beginPath();
+  for (let k = 0; k < 10; k++) { const a = -Math.PI / 2 + k * Math.PI / 5, rr2 = k % 2 ? r * 0.45 : r; ctx.lineTo(x + Math.cos(a) * rr2, y + Math.sin(a) * rr2); }
+  ctx.closePath();
+  ctx.fillStyle = filled ? '#ffd23f' : 'rgba(0,0,0,0.25)'; ctx.fill();
+  ctx.strokeStyle = INK; ctx.lineWidth = 2.6; ctx.lineJoin = 'round'; ctx.stroke();
+}
+
+function drawHUD() {
+  const c = C, wd = WORLDS[c.L.world];
+  ctx.fillStyle = '#0c1a24'; ctx.fillRect(0, 0, W, HUD_H);
+  ctx.fillStyle = wd.chip; ctx.fillRect(0, HUD_H - 4, W, 4);
+  // pearls
+  pearlIcon(38, HUD_H / 2, 15);
+  const met = c.pearls >= c.need;
+  const pulse = met ? 1 + Math.sin(G.time * 6) * 0.04 : 1;
+  ctx.save(); ctx.translate(64, HUD_H / 2); ctx.scale(pulse, pulse);
+  txt(met ? `${c.pearls}` : `${c.pearls} / ${c.need}`, 0, 2, 34, met ? '#ffe27a' : '#ffffff', 'left', 800, 0);
+  ctx.restore();
+  let x = 64 + (met ? 60 : 120);
+  if (met) { txt('✓ OPEN', x, HUD_H / 2 + 2, 20, '#ffe27a', 'left'); x += 90; }
+  // keys + bombs
+  for (let k = 0; k < 3; k++) if (c.keys[k]) { drawKey(x + 18, HUD_H / 2, KEY_COLORS[k], 0.75); x += 44; }
+  if (c.hasBombs || c.bombs > 0) { drawPuffer(x + 20, HUD_H / 2, false, 0, 0.75); txt('×' + c.bombs, x + 42, HUD_H / 2 + 2, 26, '#ffe27a', 'left'); x += 90; }
+  // name in the middle when there's room
+  const name = `${c.idx + 1}. ${c.L.name}`;
+  const cxm = W / 2;
+  if (x < cxm - 140) txt(name, cxm, HUD_H / 2 + 2, fitSize(name, 300, 24), '#cfe6ee', 'center', 800);
+  // time + score + pause
+  const tl = Math.ceil(c.timeLeft), low = tl <= 10 && c.phase === 'play';
+  const tcol = low ? (Math.sin(G.time * 12) > 0 ? '#ff6b6b' : '#ffffff') : '#ffffff';
+  txt('⏱', W - 300, HUD_H / 2 + 2, 26, '#fff', 'center', 600);
+  txt(String(tl), W - 282, HUD_H / 2 + 2, 32, tcol, 'left');
+  txt(String(c.score).padStart(5, '0'), W - 90, HUD_H / 2 + 2, 26, '#b8f0ff', 'right');
+  roundButton('pause', W - 44, HUD_H / 2, 24, 'II', { act: () => { if (!playOverlay()) { G.paused = true; kbFocus = 0; } }, size: 20, color: '#ffffff' });
+}
+
+function drawTouchControls() {
+  const c = C;
+  if (!G.touchMode || playOverlay() || c.phase === 'won') return;
+  const s = G.stick;
+  if (s) {
+    ctx.save();
+    ctx.globalAlpha = 0.45; ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(s.ox, s.oy, 70, 0, TAU); ctx.lineWidth = 4; ctx.strokeStyle = '#fff'; ctx.stroke();
+    ctx.globalAlpha = 0.7;
+    ctx.beginPath(); ctx.arc(s.x, s.y, 30, 0, TAU); ctx.fill();
+    ctx.restore();
+  } else if (c.phase === 'play' && c.hintT < 8 && c.idx === 0) {
+    ctx.save(); ctx.globalAlpha = 0.35 + Math.sin(G.time * 4) * 0.1;
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.arc(150, H - 150, 70, 0, TAU); ctx.stroke();
+    txt('drag', 150, H - 150, 22, '#fff');
+    ctx.restore();
+  }
+  roundButton('grab', W - 92, H - 96, 58, '👅', { hold: true, size: 40, alpha: 0.85, sub: 'SLURP', color: 'rgba(255,170,200,0.9)', pressColor: '#ff7aa8' });
+  if (c.hasBombs || c.bombs > 0)
+    roundButton('bomb', W - 210, H - 82, 46, '💥', { act: () => { G.bombQueued = true; }, size: 30, alpha: c.bombs > 0 ? 0.9 : 0.4, sub: 'BOMB ×' + c.bombs, color: 'rgba(255,226,122,0.9)', nav: false });
+}
+
+function hintText(h) {
+  const move = G.touchMode ? 'Drag your finger to dig.' : 'Use the arrow keys to dig.';
+  const slurp = G.touchMode ? 'Hold SLURP and drag to' : 'Hold SPACE + an arrow to';
+  const bomb = G.touchMode ? 'Grab a puffer, then tap BOMB to drop it.' : 'Grab a puffer, then press B to drop it.';
+  return h.replace('{move}', move).replace('{slurp}', slurp + ' grab without moving.').replace('{bomb}', bomb);
+}
+function drawHint() {
+  const c = C;
+  if (!c.L.hint || c.hintGone || c.phase !== 'play' || c.hintT > 9) return;
+  const a = clamp(c.hintT * 3, 0, 1) * clamp((9 - c.hintT) * 2, 0, 1);
+  const text = hintText(c.L.hint);
+  const maxW = Math.min(W - 120, 820);
+  ctx.save(); ctx.globalAlpha = a;
+  ctx.font = `800 26px ${FONT}`;
+  const lines = wrapLines(text, maxW - 60);
+  const h = 30 + lines.length * 34;
+  const x = (W - maxW) / 2, y = G.touchMode ? HUD_H + 14 : H - h - 26;   // touch: keep clear of the thumbs
+  ctx.fillStyle = 'rgba(10,20,35,0.82)'; rr(ctx, x, y, maxW, h, 20); ctx.fill();
+  ctx.strokeStyle = '#ffe27a'; ctx.lineWidth = 3; ctx.stroke();
+  lines.forEach((ln, k) => txt(ln, W / 2, y + 32 + k * 34, 26, '#fff'));
+  ctx.restore();
+}
+function wrapLines(text, maxW) {
+  const words = text.split(' '), lines = [];
+  let cur = '';
+  for (const w of words) { const t = cur ? cur + ' ' + w : w; if (ctx.measureText(t).width > maxW && cur) { lines.push(cur); cur = w; } else cur = t; }
+  if (cur) lines.push(cur);
+  return lines;
+}
+function drawToast() {
+  if (!G.toast) return;
+  const k = G.toast.t, a = clamp(k * 5, 0, 1) * clamp((2.6 - k) * 3, 0, 1);
+  const s = 1 + Math.max(0, 0.25 - k) * 1.5;
+  const hintUp = G.touchMode && C && C.L.hint && !C.hintGone && C.phase === 'play' && C.hintT < 9;
+  ctx.save(); ctx.globalAlpha = a; ctx.translate(W / 2, HUD_H + (hintUp ? 170 : 70)); ctx.scale(s, s);
+  txt(G.toast.text, 0, 0, fitSize(G.toast.text, W - 80, 42), G.toast.color, 'center', 800, 8);
+  ctx.restore();
+}
+
+/* ---------- overlays on top of a cave ---------- */
+const CAUSE = {
+  rock: ['BONK!', 'A rock landed on you.'],
+  crab: ['PINCHED!', 'A crab got too close.'],
+  jelly: ['ZAPPED!', 'A jellyfish got too close.'],
+  bomb: ['KA-POOF!', 'Too close to the puffer!'],
+  boom: ['KA-BOOM!', 'You got caught in a blast.'],
+  time: ["TIME'S UP!", 'Be a little quicker next time.']
+};
+function drawOverlay(kind) {
+  const c = C;
+  if (kind === 'paused') {
+    dim(0.55);
+    const pw = 460, ph = 470, px = (W - pw) / 2, py = (H - ph) / 2;
+    panel(px, py, pw, ph, '#e9fbff');
+    txt('PAUSED', W / 2, py + 50, 50, '#ff7aa8', 'center', 800, 8);
+    button('resume', px + 60, py + 100, pw - 120, 70, '▶ KEEP GOING', { act: () => { G.paused = false; }, color: '#3ccf7a', size: 32 });
+    button('restart', px + 60, py + 186, pw - 120, 60, '↻ RESTART CAVE', { act: () => startCave(c.idx), color: '#ffb347' });
+    button('help', px + 60, py + 262, pw - 120, 60, '? HOW TO PLAY', { act: openHelp, color: '#7aa8ff' });
+    button('caves', px + 60, py + 338, (pw - 130) / 2, 60, '🗺 CAVES', { act: openCaves, color: '#b98cff', size: 26 });
+    button('menu', px + 70 + (pw - 130) / 2, py + 338, (pw - 130) / 2, 60, '🏠 MENU', { act: goTitle, color: '#8a93a6', size: 26, back: true });
+    soundToggles(px + pw / 2, py + ph - 26);
+    return;
+  }
+  if (kind === 'dead' || kind === 'timeup') {
+    dim(0.5);
+    const [title, sub] = CAUSE[c.player.cause] || CAUSE.boom;
+    const tries = save.tries[c.idx] || 0;
+    const canSkip = tries >= 3 && c.idx + 1 < LEVELS.length && save.best[c.idx] == null;
+    const pw = 520, ph = canSkip ? 420 : 350, px = (W - pw) / 2, py = (H - ph) / 2;
+    panel(px, py, pw, ph, '#fff1f4');
+    drawLotl(px + pw / 2, py + 62, 26, LOTLS[save.lotl] || LOTLS[0], { t: G.frame, mouth: 'o', tilt: Math.sin(G.time * 3) * 0.2 });
+    txt(title, W / 2, py + 132, 52, '#ff5a7a', 'center', 800, 8);
+    txt(sub, W / 2, py + 180, 24, '#5a3a4a', 'center', 800);
+    button('retry', px + 50, py + 214, pw - 100, 72, '↻ TRY AGAIN', { act: () => startCave(c.idx), color: '#3ccf7a', size: 34 });
+    if (canSkip) button('skip', px + 50, py + 300, pw - 100, 52, '⏭ SKIP TO THE NEXT CAVE', {
+      act: () => { save.unlocked = Math.max(save.unlocked, c.idx + 2); persist(); startCave(c.idx + 1); }, color: '#ffb347', size: 24 });
+    button('caves', px + 50, py + ph - 62, (pw - 110) / 2, 46, '🗺 CAVES', { act: openCaves, color: '#b98cff', size: 22 });
+    button('menu', px + 60 + (pw - 110) / 2, py + ph - 62, (pw - 110) / 2, 46, '🏠 MENU', { act: goTitle, color: '#8a93a6', size: 22, back: true });
+    return;
+  }
+  if (kind === 'won') {
+    dim(0.45);
+    const r = c.result;
+    const last = c.idx === LEVELS.length - 1;
+    const pw = 580, ph = 470, px = (W - pw) / 2, py = (H - ph) / 2;
+    panel(px, py, pw, ph, '#fffbe8');
+    txt(last ? 'YOU BEAT EVERY CAVE!' : 'CAVE CLEAR!', W / 2, py + 52, last ? 44 : 54, '#ffb020', 'center', 800, 8);
+    const k = c.phaseT - 0.9;
+    for (let s = 0; s < 3; s++) {
+      const appear = clamp((k - 0.25 - s * 0.35) * 4, 0, 1);
+      const on = s < r.stars && appear > 0;
+      if (on && r.shown <= s) { r.shown = s + 1; Snd.star(s); }
+      const sc = on ? 1 + (1 - appear) * 0.8 : 1;
+      drawStarShape(W / 2 + (s - 1) * 84, py + 128 - (s === 1 ? 10 : 0), 34 * sc, on);
+    }
+    const crit = [`Clear the cave`, `Get ${r.starPearls} pearls (${c.pearls})`, `Finish with ${Math.ceil(c.time * 0.35)}s left`];
+    ctx.save();
+    crit.forEach((s, n) => txt((n < r.stars ? '★ ' : '☆ ') + s, W / 2, py + 186 + n * 28, 20, n < r.stars ? '#a46a00' : '#9a8f80', 'center', 800));
+    ctx.restore();
+    txt(`Score ${c.score}  +  Time bonus ${r.timeBonus}  =  ${r.total}`, W / 2, py + 286, 26, '#3a2a1a', 'center', 800);
+    if (r.fresh.length) {
+      const l = r.fresh[0];
+      drawLotl(px + 80, py + 336, 18, l, { t: G.frame });
+      txt(`NEW LOTL: ${l.name.toUpperCase()}!`, px + 120, py + 338, 24, '#ff5a9a', 'left', 800);
+    }
+    if (last) button('menu2', px + 60, py + ph - 100, pw - 120, 70, '🏆 HOORAY!', { act: goTitle, color: '#ffb020', size: 34 });
+    else button('next', px + 60, py + ph - 100, pw - 230, 70, '▶ NEXT CAVE', { act: () => startCave(c.idx + 1), color: '#3ccf7a', size: 34 });
+    if (!last) button('retry', px + pw - 160, py + ph - 100, 100, 70, '↻', { act: () => startCave(c.idx), color: '#ffb347', size: 34 });
+    for (const p of G.parts) if (p.screen) drawPart(p);
+  }
+}
+function soundToggles(cx, cy) {
+  roundButton('mute', cx - 34, cy, 22, save.mute ? '🔇' : '🔊', { act: () => { save.mute = !save.mute; persist(); Music.refresh(); }, size: 20 });
+  roundButton('music', cx + 34, cy, 22, '🎵', { act: () => { save.music = !save.music; persist(); Music.refresh(); }, size: 20, alpha: save.music && !save.mute ? 1 : 0.45 });
+}
+
+/* ============================================================
+   MENUS
+   ============================================================ */
+const titleImg = new Image();
+let titleReady = false;
+titleImg.onload = () => { titleReady = true; };
+titleImg.src = 'assets/title.jpg';
+
+function drawCover(img) {
+  const ir = img.width / img.height, sr = W / H;
+  let w, h;
+  if (ir > sr) { h = H; w = H * ir; } else { w = W; h = W / ir; }
+  const drift = Math.sin(G.time * 0.15) * 10;
+  ctx.drawImage(img, (W - w) / 2 + drift, (H - h) / 2, w, h);
+}
+function drawLogo(x, y, size) {
+  ctx.save();
+  ctx.translate(x, y); ctx.rotate(-0.03);
+  const letters = 'LOTL DASH'.split('');
+  ctx.font = `800 ${size}px ${FONT}`;
+  const widths = letters.map(l => ctx.measureText(l).width);
+  const total = widths.reduce((a, b) => a + b, 0);
+  let px = -total / 2;
+  const cols = ['#ff7aa8', '#ff9ec0', '#ffd23f', '#ff7aa8', '#fff', '#8ff7ff', '#5fd4ff', '#ffd23f', '#ff9ec0'];
+  letters.forEach((l, k) => {
+    const bob = Math.sin(G.time * 3 + k * 0.6) * size * 0.04;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round'; ctx.lineWidth = size * 0.2; ctx.strokeStyle = INK; ctx.strokeText(l, px, bob);
+    ctx.fillStyle = cols[k]; ctx.fillText(l, px, bob);
+    ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.save(); ctx.beginPath(); ctx.rect(px, bob - size * 0.45, widths[k], size * 0.3); ctx.clip(); ctx.fillText(l, px, bob); ctx.restore();
+    px += widths[k];
+  });
+  ctx.restore();
+}
+
+function drawTitle() {
+  if (titleReady) drawCover(titleImg);
+  else drawWater(WORLDS[0], 0);
+  const g = ctx.createLinearGradient(0, 0, 0, 260);
+  g.addColorStop(0, 'rgba(5,20,35,0.6)'); g.addColorStop(1, 'rgba(5,20,35,0)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, 260);
+  drawLogo(W / 2, 92, Math.min(124, W * 0.1));
+  txt('Dig  •  Dodge  •  Grab the pearls!', W / 2, 172, 30, '#fff', 'center', 800, 7);
+  if (save.champion) txt('👑 CHAMPION OF EVERY CAVE 👑', W / 2, 212, 22, '#ffe27a', 'center', 800, 5);
+  // the big buttons, bottom-right on a soft card
+  const bw = 330, bx = W - bw - 40, by = H - 300;
+  ctx.fillStyle = 'rgba(5,20,35,0.55)'; rr(ctx, bx - 20, by - 20, bw + 40, 290, 26); ctx.fill();
+  const nxt = nextCaveIndex();
+  button('play', bx, by, bw, 92, nxt === 0 && save.best[0] == null ? '▶ PLAY' : `▶ PLAY CAVE ${nxt + 1}`, { act: () => startCave(nxt), color: '#3ccf7a', size: 40 });
+  button('cavesBtn', bx, by + 110, bw, 64, '🗺 CAVES', { act: openCaves, color: '#b98cff' });
+  button('helpBtn', bx, by + 190, bw, 64, '? HOW TO PLAY', { act: openHelp, color: '#7aa8ff' });
+  // lotl picker, bottom-left
+  const lx = 40, ly = H - 210, lw = 300, lh = 180;
+  ctx.fillStyle = 'rgba(5,20,35,0.55)'; rr(ctx, lx, ly, lw, lh, 26); ctx.fill();
+  const l = LOTLS[save.lotl] || LOTLS[0];
+  drawLotl(lx + lw / 2 + 16, ly + 76, 30, l, { t: G.frame });
+  txt(l.name, lx + lw / 2, ly + 146, 30, '#fff', 'center', 800, 5);
+  roundButton('lotlPrev', lx + 34, ly + 76, 24, '◀', { act: () => cycleLotl(-1), size: 20 });
+  roundButton('lotlNext', lx + lw - 34, ly + 76, 24, '▶', { act: () => cycleLotl(1), size: 20 });
+  const locked = LOTLS.filter(x => !isUnlocked(x));
+  if (locked.length) {
+    const nx = locked[0];
+    txt(`🔒 ${nx.unlock.label} for a new lotl`, lx + lw / 2, ly - 18, 18, '#fff', 'center', 800, 4);
+  }
+  soundToggles(W - 86, 40);
+}
+
+function drawCaves() {
+  drawWater(WORLDS[Math.floor(G.cavesSel / 4)] || WORLDS[0], 0);
+  txt('CHOOSE A CAVE', W / 2, 46, 46, '#fff', 'center', 800, 8);
+  txt(`★ ${totalStars()} / ${LEVELS.length * 3}`, W - 60, 46, 26, '#ffe27a', 'right', 800, 5);
+  button('back', 30, 18, 130, 54, '◀ BACK', { act: goTitle, color: '#8a93a6', size: 24, back: true, nav: false });
+  const cols = 4, gap = 16, top = 96, left = 120;
+  const cw = Math.min(260, (W - left - 40 - gap * (cols - 1)) / cols), ch = 128;
+  const rowH = ch + 22;
+  for (let wi = 0; wi < WORLDS.length; wi++) {
+    const y = top + wi * rowH;
+    const wd = WORLDS[wi];
+    ctx.save(); ctx.translate(left - 60, y + ch / 2); ctx.rotate(-Math.PI / 2);
+    txt(wd.name.toUpperCase(), 0, 0, 17, '#fff', 'center', 800, 4);
+    ctx.restore();
+    ctx.fillStyle = wd.chip; rr(ctx, left - 44, y, 8, ch, 4); ctx.fill();
+    for (let k = 0; k < cols; k++) {
+      const idx = wi * cols + k;
+      if (idx >= LEVELS.length) continue;
+      const x = left + k * (cw + gap);
+      const L = LEVELS[idx], open = idx < save.unlocked, sel = G.cavesSel === idx;
+      buttons.push({ id: 'cave' + idx, x, y, w: cw, h: ch, nav: false, act: () => { if (open) { G.cavesSel = idx; startCave(idx); } else Snd.bump(); } });
+      ctx.save();
+      ctx.fillStyle = 'rgba(0,0,0,0.3)'; rr(ctx, x, y + 6, cw, ch, 20); ctx.fill();
+      const g = ctx.createLinearGradient(0, y, 0, y + ch);
+      g.addColorStop(0, open ? wd.water[0] : '#4a4f5a'); g.addColorStop(1, open ? wd.water[1] : '#2a2e36');
+      ctx.fillStyle = g; rr(ctx, x, y, cw, ch, 20); ctx.fill();
+      ctx.strokeStyle = sel ? '#ffe27a' : INK; ctx.lineWidth = sel ? 5 : 3; ctx.stroke();
+      ctx.fillStyle = open ? wd.mud : '#3a3e46'; rr(ctx, x + 3, y + ch - 30, cw - 6, 27, 16); ctx.fill();
+      if (open) {
+        txt(String(idx + 1), x + 34, y + 34, 40, '#fff', 'center', 800, 6);
+        txt(L.name, x + cw / 2 + 18, y + 34, fitSize(L.name, cw - 80, 22), '#fff', 'center', 800, 4);
+        const st = save.stars[idx] || 0;
+        for (let s = 0; s < 3; s++) drawStarShape(x + cw / 2 + (s - 1) * 34, y + 76, 14, s < st);
+        if (save.best[idx] != null) txt(String(save.best[idx]), x + cw / 2, y + ch - 16, 18, '#fff', 'center', 800, 4);
+        else txt('NEW!', x + cw / 2, y + ch - 16, 18, '#ffe27a', 'center', 800, 4);
+      } else {
+        txt('🔒', x + cw / 2, y + 56, 36, '#fff', 'center', 600);
+        txt(String(idx + 1), x + cw / 2, y + ch - 16, 18, '#9aa', 'center', 800);
+      }
+      ctx.restore();
+    }
+  }
+}
+
+const HELP = [
+  [T.PLAYER, 'This is you! Dig through mud with the arrow keys, or drag a finger.'],
+  [T.PEARL, 'Grab pearls. Get enough and the shell opens.'],
+  [T.EXIT, 'Swim into the open shell to finish the cave.'],
+  [T.ROCK, "Rocks fall and roll. Don't stand under a falling one! Walk into one from the side to push it."],
+  ['slurp', 'SLURP: hold SPACE (or the 👅 button) + a direction to grab without moving.'],
+  [T.CRAB, 'Crabs explode if they touch you. Drop a rock on them!'],
+  [T.JELLY, 'Jellyfish explode into 9 pearls. Drop a rock on them!'],
+  [T.ALGAE, 'Algae grows. Box it in and it turns to pearls. Too big and it turns to rock.'],
+  [T.MAGIC, 'Glowing coral turns falling rocks into pearls, for a little while.'],
+  [T.FISH, 'The catfish steals pearls. Squash it to get them all back.'],
+  [T.KEY, 'A key opens the gate of the same color.'],
+  [T.BOMBITEM, 'Puffer: press B (or 💥) to drop one in front of you. Then swim away!'],
+  [T.CLOCK, 'Clock bubbles give you 15 more seconds.'],
+  [T.WALL, 'Coral walls are tough, but blasts break them. Grey bedrock never breaks.']
+];
+function drawHelp() {
+  drawWater(WORLDS[0], 0);
+  ensureSprites(C ? C.L.world : 0);
+  txt('HOW TO PLAY', W / 2, 42, 44, '#fff', 'center', 800, 8);
+  button('back', 30, 16, 130, 54, '◀ BACK', { act: closeHelp, color: '#8a93a6', size: 24, back: true });
+  const colW = (W - 80) / 2, rowH = 84, top = 86;
+  HELP.forEach(([icon, text], k) => {
+    const col = k % 2, row = (k / 2) | 0;
+    const x = 40 + col * colW, y = top + row * rowH;
+    ctx.fillStyle = 'rgba(5,20,35,0.5)'; rr(ctx, x, y, colW - 16, rowH - 10, 16); ctx.fill();
+    const ix = x + 44, iy = y + (rowH - 10) / 2;
+    drawHelpIcon(icon, ix, iy);
+    ctx.font = `800 19px ${FONT}`;
+    const lines = wrapLines(text, colW - 120);
+    lines.slice(0, 3).forEach((ln, n) => txt(ln, x + 86, iy + (n - (Math.min(3, lines.length) - 1) / 2) * 22, 19, '#fff', 'left', 800));
+  });
+}
+function drawHelpIcon(icon, x, y) {
+  const s = 0.9;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x - 32, y - 32, 64, 64); ctx.clip();
+  switch (icon) {
+    case T.PLAYER: drawLotl(x + 6, y, 15, LOTLS[save.lotl] || LOTLS[0], { t: G.frame }); break;
+    case T.PEARL: ctx.drawImage(SPR.pearl, x - 28, y - 28, 56, 56); break;
+    case T.EXIT: drawExit(x, y, true, s); break;
+    case T.ROCK: ctx.drawImage(SPR.rock, x - 28, y - 28, 56, 56); break;
+    case 'slurp': drawLotl(x - 8, y, 13, LOTLS[save.lotl] || LOTLS[0], { t: G.frame, tongue: 18 + Math.sin(G.time * 6) * 6 }); break;
+    case T.CRAB: drawCrab(x, y, 1, s); break;
+    case T.JELLY: drawJelly(x, y, 1, s); break;
+    case T.ALGAE: ctx.fillStyle = '#1b5a24'; ctx.beginPath(); ctx.arc(x, y, 30, 0, TAU); ctx.fill(); ctx.fillStyle = '#58c24e'; ctx.beginPath(); ctx.arc(x, y, 26, 0, TAU); ctx.fill(); ctx.fillStyle = '#9af07a'; ctx.beginPath(); ctx.arc(x - 8, y - 8, 5, 0, TAU); ctx.fill(); break;
+    case T.MAGIC: { const save2 = C; C = null; drawMagic(x, y, 3); C = save2; break; }
+    case T.FISH: drawFish(x, y, 1, 1, 0, s); break;
+    case T.KEY: drawKey(x, y, KEY_COLORS[0], s); break;
+    case T.BOMBITEM: drawPuffer(x, y, false, 0, s); break;
+    case T.CLOCK: drawClock(x, y, s); break;
+    case T.WALL: ctx.drawImage(SPR.wall, x - 28, y - 28, 56, 56); break;
+  }
+  ctx.restore();
+}
+
+/* ============================================================
+   MAIN LOOP
+   ============================================================ */
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  update(dt);
+  buttons = [];
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#06161d'; ctx.fillRect(0, 0, cvs.width, cvs.height);
+  ctx.setTransform(DPR * scale, 0, 0, DPR * scale, DPR * offX, DPR * offY);
+  if (G.screen === 'title') drawTitle();
+  else if (G.screen === 'caves') drawCaves();
+  else if (G.screen === 'help') drawHelp();
+  else if (G.screen === 'play' && C) {
+    drawCave();
+    if (G.flash > 0) { ctx.fillStyle = `rgba(255,255,240,${G.flash * 0.6})`; ctx.fillRect(0, HUD_H, W, H - HUD_H); }
+    drawHUD();
+    drawHint();
+    drawToast();
+    drawTouchControls();
+    const ov = playOverlay();
+    if (ov) drawOverlay(ov);
+  }
+  requestAnimationFrame(frame);
+}
+
+/* ============================================================
+   DEBUG + TUNING HOOKS (see README)
+   ============================================================ */
+function validateAll(ticks) {
+  const keep = C, keepOff = OFF, out = [];
+  G.silent = true;
+  for (let idx = 0; idx < LEVELS.length; idx++) {
+    C = newCave(idx); OFF = [-C.w, 1, C.w, -1];
+    const c = C;
+    let pearls = 0, jellies = 0, fish = 0, crabs = 0;
+    for (let i = 0; i < c.n; i++) { if (c.t[i] === T.PEARL) pearls++; if (c.t[i] === T.JELLY) jellies++; if (c.t[i] === T.FISH) fish++; if (c.t[i] === T.CRAB) crabs++; }
+    // can the lotl dig from the start to the exit (walls, bedrock and gates block)?
+    const seen = new Uint8Array(c.n), q = [c.entry]; seen[c.entry] = 1;
+    let reachPearls = 0, reachExit = false;
+    while (q.length) {
+      const cur = q.pop();
+      for (const o of OFF) {
+        const nb = cur + o, tn = c.t[nb];
+        if (seen[nb] || tn === T.STEEL || tn === T.WALL || tn === T.GATE || tn === T.MAGIC) continue;
+        seen[nb] = 1; if (tn === T.PEARL) reachPearls++; if (tn === T.EXIT) { reachExit = true; continue; }
+        q.push(nb);
+      }
+    }
+    c.phase = 'play'; setCell(c.entry, T.PLAYER); c.player.i = c.entry;
+    for (let k = 0; k < (ticks || 40); k++) stepCave();
+    out.push({ cave: idx + 1, name: c.L.name, size: (c.w - 2) + 'x' + (c.h - 2), need: c.need, pearls, reachPearls, jellies, crabs, fish, reachExit, aliveIdle: c.player.alive });
+  }
+  G.silent = false;
+  C = keep; OFF = keepOff;
+  G.parts = []; G.floats = []; G.toast = null;
+  return out;
+}
+window.LotlDash = {
+  G, LEVELS, T, save,
+  get C() { return C; },
+  start: n => startCave(n - 1),
+  validate: validateAll,
+  step: () => stepCave(),
+  hold: (code, on) => { if (on) keysDown.add(code); else keysDown.delete(code); },
+  unlockAll() { save.unlocked = LEVELS.length; persist(); },
+  givePearls(n) { if (C) { C.pearls += n || C.need; checkExit(); } },
+  reset() { localStorage.removeItem(SAVE_KEY); location.reload(); }
+};
+
+resize();
+if (document.fonts && document.fonts.load) document.fonts.load(`800 30px "Baloo 2"`).catch(() => {});
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
