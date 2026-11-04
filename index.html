@@ -252,6 +252,8 @@ const TICK = 0.15;      // seconds per cave step
 const PUSH_TICKS = 2;   // a rock budges on the 2nd step of pushing — feels heavy, avoids accidents
 const BOMB_FUSE = 9;
 const MAGIC_TICKS = 140;
+const RELAXED = 0.75;     // 🐢 relaxed speed: the whole cave (and its clock) runs at 3/4 pace
+const caveSpeed = () => (save.speed || (G.touchMode ? 'slow' : 'normal')) === 'slow' ? RELAXED : 1;   // tablets start relaxed
 const CRITTER_EVERY = 2;  // crabs, jellies and catfish take one step every N cave steps (the lotl moves every step)
 const STUCK_STEPS = 10;   // ~1.5 s boxed in before the 'boxed in?' card shows
 const REVEAL_TIME = 0.9;
@@ -731,7 +733,7 @@ function buildGrid(L, idx) {
 const G = {
   screen: 'title', time: 0, frame: 0, paused: false, silent: false,
   parts: [], floats: [], toast: null, flash: 0, shake: 0,
-  dirStack: [], queuedDir: -1, bombQueued: false,
+  dirStack: [], queuedDir: -1, queuedGrab: false, grabNow: false, bombQueued: false,
   stick: null, holds: {}, press: null, touchMode: false,
   cavesSel: 0, helpPage: 0, helpFrom: 'title', newLotl: null, lotlPreview: 0, motes: []
 };
@@ -794,7 +796,7 @@ function startCave(idx) {
   OFF = [-C.w, 1, C.w, -1];
   G.screen = 'play'; G.paused = false;
   G.parts = []; G.floats = []; G.toast = null; G.flash = 0; G.shake = 0;
-  G.queuedDir = -1; G.bombQueued = false; G.hint = null;
+  G.queuedDir = -1; G.queuedGrab = false; G.bombQueued = false; G.hint = null;
   snapCamera();
 }
 // restart mid-cave; when the lotl is boxed in it counts as a try (so SKIP still shows up after 3)
@@ -1096,12 +1098,12 @@ function killPlayer(cause) {
 
 function takeDir() {
   if (SIM) return SIM.dir;
-  if (G.queuedDir >= 0) { const d = G.queuedDir; G.queuedDir = -1; return d; }
+  if (G.queuedDir >= 0) { const d = G.queuedDir; G.queuedDir = -1; G.grabNow = G.queuedGrab; G.queuedGrab = false; return d; }
   if (G.stick && G.stick.dir >= 0) return G.stick.dir;
   if (G.dirStack.length) return G.dirStack[G.dirStack.length - 1];
   return -1;
 }
-const grabHeld = () => SIM ? SIM.grab : keysDown.has('Space') || keysDown.has('ShiftLeft') || keysDown.has('ShiftRight') || Object.values(G.holds).includes('grab');
+const grabHeld = () => SIM ? SIM.grab : G.grabNow || keysDown.has('Space') || keysDown.has('ShiftLeft') || keysDown.has('ShiftRight') || Object.values(G.holds).includes('grab');
 
 function playerUpdate(i) {
   const c = C, P = c.player, t = c.t;
@@ -1114,6 +1116,7 @@ function playerUpdate(i) {
       else { floatText(i, 'No room!', '#ffd0d0'); sfx('bump'); }
     } else { floatText(i, 'No puffers!', '#ffd0d0'); }
   }
+  G.grabNow = false;
   const dir = takeDir();
   if (dir < 0) { P.pushTarget = -1; P.idle++; return; }
   P.idle = 0; P.lastDir = dir;
@@ -1276,7 +1279,7 @@ window.addEventListener('keydown', e => {
     if (!overlay) {
       if (KEYDIR[code] != null) {
         const d = KEYDIR[code];
-        if (fresh) { G.dirStack = G.dirStack.filter(x => x !== d); G.dirStack.push(d); if (C.phase === 'play') G.queuedDir = d; }
+        if (fresh) { G.dirStack = G.dirStack.filter(x => x !== d); G.dirStack.push(d); if (C.phase === 'play') { G.queuedDir = d; G.queuedGrab = false; } }
         return;
       }
       if (fresh && (code === 'KeyB' || code === 'KeyX' || code === 'Enter')) { G.bombQueued = true; return; }
@@ -1343,7 +1346,7 @@ cvs.addEventListener('pointerdown', e => {
     return;
   }
   if (G.screen === 'play' && C && !playOverlay()) {
-    if (!G.stick) G.stick = { pid: e.pointerId, ox: p.x, oy: p.y, x: p.x, y: p.y, dir: -1 };
+    if (!G.stick) G.stick = { pid: e.pointerId, ox: p.x, oy: p.y, x: p.x, y: p.y, dir: -1, t0: performance.now(), moved: false };
   }
 });
 cvs.addEventListener('pointermove', e => {
@@ -1357,11 +1360,16 @@ cvs.addEventListener('pointermove', e => {
   if (dist > MAXR) { s.ox = s.x - dx / dist * MAXR; s.oy = s.y - dy / dist * MAXR; dx = s.x - s.ox; dy = s.y - s.oy; }
   let dir = -1;
   if (dist > 18) dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 1 : 3) : (dy > 0 ? 2 : 0);
-  if (dir >= 0 && dir !== s.dir && C && C.phase === 'play') G.queuedDir = dir;
+  if (dir >= 0 && dir !== s.dir && C && C.phase === 'play') { G.queuedDir = dir; G.queuedGrab = false; }
+  if (dir >= 0) s.moved = true;
   s.dir = dir;
 });
 function pointerEnd(e) {
-  if (G.stick && G.stick.pid === e.pointerId) G.stick = null;
+  const s = G.stick;
+  if (s && s.pid === e.pointerId) {
+    G.stick = null;
+    if (e.type === 'pointerup' && !s.moved && performance.now() - s.t0 < 400) tapSlurp(s.ox, s.oy);
+  }
   if (G.holds[e.pointerId]) delete G.holds[e.pointerId];
   if (G.press && G.press.pid === e.pointerId) {
     const p = toWorld(e.clientX, e.clientY);
@@ -1370,6 +1378,17 @@ function pointerEnd(e) {
     G.press = null;
     if (b && b.id === id && b.act && e.type === 'pointerup') { Snd.ui(); b.act(); }
   }
+}
+// tap the cell right next to the lotl to slurp it without moving (easier to time than SLURP + drag)
+function tapSlurp(x, y) {
+  const c = C;
+  if (!c || c.phase !== 'play' || playOverlay() || c.player.i < 0) return;
+  const cx = Math.floor((x + c.camX) / TS), cy = Math.floor((y - HUD_H + c.camY) / TS);
+  const px = c.player.i % c.w, py = (c.player.i / c.w) | 0;
+  const dx = cx - px, dy = cy - py;
+  if (Math.abs(dx) + Math.abs(dy) !== 1) return;
+  G.queuedDir = dx > 0 ? 1 : dx < 0 ? 3 : dy > 0 ? 2 : 0;
+  G.queuedGrab = true;
 }
 cvs.addEventListener('pointerup', pointerEnd);
 cvs.addEventListener('pointercancel', pointerEnd);
@@ -1429,14 +1448,14 @@ function updatePlay(dt) {
     c.phase = 'play'; c.phaseT = 0;
     setCell(c.entry, T.PLAYER); c.player.i = c.entry;
     Snd.appear(); sparkle(c.entry, 14, '#ffd6e6');
-    G.queuedDir = -1;
+    G.queuedDir = -1; G.queuedGrab = false;
   }
   if (c.phase === 'play') {
     c.hintT += dt;
     if (c.pearls !== c.seenPearls) { c.seenPearls = c.pearls; c.quietT = 0; } else c.quietT += dt;
     updateHint(dt);
     const before = Math.ceil(c.timeLeft);
-    c.timeLeft -= dt;
+    c.timeLeft -= dt * caveSpeed();
     const now = Math.ceil(c.timeLeft);
     if (now !== before && now <= 10 && now > 0) Snd.tick();
     if (c.timeLeft <= 0) {
@@ -1446,7 +1465,7 @@ function updatePlay(dt) {
     }
   }
   if (c.phase === 'entry' || c.phase === 'play' || c.phase === 'dead' || c.phase === 'timeup') {
-    c.acc += dt;
+    c.acc += dt * caveSpeed();
     let guard = 0;
     while (c.acc >= TICK && guard++ < 4) { c.acc -= TICK; stepCave(); if (c.phase === 'won') break; }
     if (c.acc > TICK) c.acc = TICK * 0.99;
@@ -2306,7 +2325,7 @@ function drawTouchControls() {
 
 function hintText(h) {
   const move = G.touchMode ? 'Drag your finger to dig.' : 'Use the arrow keys to dig.';
-  const slurp = G.touchMode ? 'Hold SLURP and drag to' : 'Hold SPACE + an arrow to';
+  const slurp = G.touchMode ? 'Tap the spot right next to you (or hold SLURP and drag) to' : 'Hold SPACE + an arrow to';
   const bomb = G.touchMode ? 'Grab a puffer, then tap BOMB to drop it.' : 'Grab a puffer, then press B to drop it.';
   return h.replace('{move}', move).replace('{slurp}', slurp + ' grab without moving.').replace('{bomb}', bomb);
 }
@@ -2386,7 +2405,7 @@ function drawOverlay(kind) {
     button('help', px + 60, by + 262, pw - 120, 60, '? HOW TO PLAY', { act: openHelp, color: '#7aa8ff' });
     button('caves', px + 60, by + 338, (pw - 130) / 2, 60, '🗺 CAVES', { act: openCaves, color: '#b98cff', size: 26 });
     button('menu', px + 70 + (pw - 130) / 2, by + 338, (pw - 130) / 2, 60, '🏠 MENU', { act: goTitle, color: '#8a93a6', size: 26, back: true });
-    soundToggles(px + pw / 2, py + ph - 26);
+    soundToggles(px + pw / 2 + 34, py + ph - 26);   // 🐢 🔊 🎵 centred
     return;
   }
   if (kind === 'dead' || kind === 'timeup') {
@@ -2438,6 +2457,11 @@ function drawOverlay(kind) {
   }
 }
 function soundToggles(cx, cy) {
+  const slow = caveSpeed() < 1;
+  roundButton('speed', cx - 102, cy, 22, slow ? '🐢' : '🐇', { act: () => {
+    save.speed = slow ? 'normal' : 'slow'; persist();
+    showToast(slow ? '🐇 Normal speed' : '🐢 Relaxed speed: everything moves a bit slower', '#fff');
+  }, size: 20 });
   roundButton('mute', cx - 34, cy, 22, save.mute ? '🔇' : '🔊', { act: () => { save.mute = !save.mute; persist(); Music.refresh(); }, size: 20 });
   roundButton('music', cx + 34, cy, 22, '🎵', { act: () => { save.music = !save.music; persist(); Music.refresh(); }, size: 20, alpha: save.music && !save.mute ? 1 : 0.45 });
 }
@@ -2565,7 +2589,7 @@ const HELP = [
   [T.PEARL, 'Grab pearls. Get enough and the shell opens.'],
   [T.EXIT, 'Swim into the open shell to finish the cave. Stuck? Tap 💡 (or H) for a hint!'],
   [T.ROCK, "Rocks fall and roll. Don't stand under a falling one! Walk into one from the side to push it."],
-  ['slurp', 'SLURP: hold SPACE (or the 👅 button) + a direction to grab without moving.'],
+  ['slurp', 'SLURP: hold SPACE (or the 👅 button) + a direction to grab without moving. On a tablet, just tap the spot next to you.'],
   [T.CRAB, 'Crabs explode if they touch you. Drop a rock on them!'],
   [T.JELLY, 'Jellyfish explode into 9 pearls. Drop a rock on them!'],
   [T.ALGAE, 'Algae grows. Box it in and it turns to pearls. Too big and it turns to rock.'],
@@ -3112,7 +3136,7 @@ function pumpHint() {
 }
 function adviceFrom(res) {
   const c = C, touch = G.touchMode;
-  const slurpHow = touch ? '(hold 👅 and drag)' : '(SPACE + arrow)';
+  const slurpHow = touch ? '(just tap it!)' : '(SPACE + arrow)';
   const e = res.log[0];
   // only send them back to the start when the solver couldn't get a single pearl further from here
   if (!res.ok && (!e || res.pearls <= c.pearls)) {

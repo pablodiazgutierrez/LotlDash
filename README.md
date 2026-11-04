@@ -43,11 +43,15 @@ unless you add `?sw` to the URL to test it.
 | | Keyboard | Tablet |
 |---|---|---|
 | Move / dig | arrow keys or W A S D | drag a finger anywhere (a joystick appears under it) |
-| Slurp (grab without moving) | hold SPACE or SHIFT + a direction | hold 👅 SLURP + drag |
+| Slurp (grab without moving) | hold SPACE or SHIFT + a direction | tap the spot right next to the lotl, or hold 👅 SLURP + drag |
 | Drop a puffer bomb | B (or X / ENTER) | 💥 BOMB |
 | Pause | ESC or P | the II button |
 | Restart the cave | R | tap ↻ twice (once when boxed in), or pause → RESTART |
 | Hint | H | tap 💡 |
+| Game speed | 🐢/🐇 button (title screen or pause card) | same; tablets start on 🐢 relaxed |
+
+🐢 Relaxed speed runs the whole cave at 3/4 pace (`RELAXED`), clock included, so the time
+limits stay just as fair. It is the default once the game sees a touch, until the player picks a speed.
 
 Menus work with mouse/touch and keyboard: arrows move, ENTER presses, ESC goes back.
 On the title screen `◀ ▶` pick a lotl, `C` opens the caves, `H` opens How To Play.
