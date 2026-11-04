@@ -1461,11 +1461,15 @@ function playerPixel() {
   return cellCenter(i);
 }
 const frac = () => C.phase === 'won' ? 1 : clamp(C.acc / TICK, 0, 1);
+const TOUCH_PAD = 150;   // px the camera may scroll below the cave in touch mode
 function camTarget() {
   const c = C, vw = W, vh = H - HUD_H, cw = c.w * TS, chh = c.h * TS;
   const [px, py] = playerPixel();
+  // on touch screens the SLURP / BOMB buttons sit in the bottom corner: let the camera go a
+  // little past the bottom of the cave so the last row (where the shell usually is) clears them
+  const padB = G.touchMode ? TOUCH_PAD : 0;
   const tx = cw <= vw ? (cw - vw) / 2 : clamp(px - vw / 2, 0, cw - vw);
-  const ty = chh <= vh ? (chh - vh) / 2 : clamp(py - vh / 2, 0, chh - vh);
+  const ty = chh + padB <= vh ? (chh - (vh - padB)) / 2 : clamp(py - vh / 2, 0, chh - vh + padB);
   return [tx, ty];
 }
 function snapCamera() { const [tx, ty] = camTarget(); C.camX = tx; C.camY = ty; }
