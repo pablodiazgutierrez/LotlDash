@@ -148,6 +148,10 @@ const Snd = {
   pearl(n) { const f = 880 * Math.pow(1.06, Math.min(n, 20)); this.blip(f, 0.12, 'sine', 0.11); this.blip(f * 1.5, 0.1, 'triangle', 0.04, 0.03); },
   land()   { this.slide(150, 55, 0.14, 'sine', 0.22); this.noise(0.08, 500, 0.08); },
   clink()  { this.blip(1500, 0.05, 'triangle', 0.06); },
+  sand()   { this.noise(0.09, 900, 0.05, 300); },
+  pop()    { this.blip(1200, 0.05, 'sine', 0.05); this.blip(1800, 0.04, 'sine', 0.03, 0.03); },
+  clam()   { this.blip(220, 0.05, 'square', 0.025); this.noise(0.04, 1400, 0.03); },
+  warp()   { this.slide(300, 1400, 0.25, 'sine', 0.09); this.slide(500, 2000, 0.2, 'triangle', 0.04, 0.05); },
   push()   { this.noise(0.14, 380, 0.13); },
   boom()   { this.noise(0.6, 1800, 0.32, 80); this.slide(140, 35, 0.5, 'sawtooth', 0.12); },
   open()   { [523, 659, 784, 1046, 1318].forEach((f, i) => this.blip(f, 0.25, 'triangle', 0.13, i * 0.07)); },
@@ -223,7 +227,11 @@ const LOTLS = [
   { id: 'blaze', name: 'Blaze', body: '#ffe14d', fin: '#ff8a1f', gill: '#ff5e00',
     unlock: { kind: 'cave', n: 8, label: 'Clear cave 8' } },
   { id: 'splash', name: 'Splash', body: '#8fd4ff', fin: '#ffe14d', gill: '#2f8fd6',
-    unlock: { kind: 'stars', n: 24, label: 'Earn 24 stars' } }
+    unlock: { kind: 'stars', n: 24, label: 'Earn 24 stars' } },
+  { id: 'coral', name: 'Coral', body: '#ffc2ae', fin: '#ff6f61', gill: '#ff3d7f',
+    unlock: { kind: 'cave', n: 20, label: 'Clear cave 20' } },
+  { id: 'nova', name: 'Nova', body: '#2b1f4f', fin: '#4dfcff', gill: '#ff4df0', eye: '#f4f0ff',
+    unlock: { kind: 'cave', n: 32, label: 'Clear cave 32' } }
 ];
 const totalStars = () => Object.values(save.stars).reduce((a, b) => a + b, 0);
 const cleared = n => save.best[n - 1] != null;
@@ -248,13 +256,18 @@ const CRITTER_EVERY = 2;  // crabs, jellies and catfish take one step every N ca
 const STUCK_STEPS = 10;   // ~1.5 s boxed in before the 'boxed in?' card shows
 const REVEAL_TIME = 0.9;
 const T = { EMPTY: 0, MUD: 1, WALL: 2, STEEL: 3, ROCK: 4, PEARL: 5, EXIT: 6, PLAYER: 7, CRAB: 8, JELLY: 9,
-  ALGAE: 10, MAGIC: 11, BOOM: 12, KEY: 13, GATE: 14, BOMBITEM: 15, BOMB: 16, FISH: 17, CLOCK: 18, ENTRY: 19 };
-const ROUND = new Uint8Array(32); ROUND[T.ROCK] = ROUND[T.PEARL] = ROUND[T.WALL] = 1;
+  ALGAE: 10, MAGIC: 11, BOOM: 12, KEY: 13, GATE: 14, BOMBITEM: 15, BOMB: 16, FISH: 17, CLOCK: 18, ENTRY: 19,
+  SAND: 20, BUBBLE: 21, PORTAL: 22, CLAM: 23, EEL: 24 };
+const ROUND = new Uint8Array(32); ROUND[T.ROCK] = ROUND[T.PEARL] = ROUND[T.WALL] = ROUND[T.BUBBLE] = 1;
 const UNBREAKABLE = new Uint8Array(32);
 UNBREAKABLE[T.STEEL] = UNBREAKABLE[T.EXIT] = UNBREAKABLE[T.KEY] = UNBREAKABLE[T.GATE] = UNBREAKABLE[T.ENTRY] = 1;
+UNBREAKABLE[T.PORTAL] = UNBREAKABLE[T.CLAM] = 1;
+const CLAM_OPEN = 18, CLAM_SHUT = 14;   // clam doors: steps open, steps shut (per cave: L.clam = [open, shut])
+const isPearlish = v => v === T.PEARL || v === T.BUBBLE;
 const KEY_COLORS = ['#ff4d6d', '#ffd23f', '#3fa7ff'];
 const OPEN = new Uint8Array(32);   // mud draws an edge where it meets these
 OPEN[T.EMPTY] = OPEN[T.PLAYER] = OPEN[T.CRAB] = OPEN[T.JELLY] = OPEN[T.FISH] = OPEN[T.BOOM] = OPEN[T.BOMB] = OPEN[T.ENTRY] = 1;
+OPEN[T.BUBBLE] = OPEN[T.PORTAL] = OPEN[T.EEL] = 1;
 const EMBED = new Uint8Array(32); EMBED[T.ROCK] = EMBED[T.PEARL] = EMBED[T.KEY] = EMBED[T.BOMBITEM] = EMBED[T.CLOCK] = 1;
 const KEY_NAMES = ['red', 'yellow', 'blue'];
 
@@ -270,7 +283,19 @@ const WORLDS = [
     rock: ['#d6dacb', '#7d8475'], chip: '#3fae6b' },
   { name: 'Crystal Deep', water: ['#3d43a6', '#100e38'], mud: '#50709a', mudDark: '#344c72', mudLight: '#7699c4', rim: '#a8c8ee',
     wall: '#ff7ac8', wallDark: '#a8408a', mortar: '#481c46', steel: '#2c2b4a', steelHi: '#4a4874', steelLo: '#17162b',
-    rock: ['#dde0f2', '#868aa8'], chip: '#8a6cf0' }
+    rock: ['#dde0f2', '#868aa8'], chip: '#8a6cf0' },
+  { name: 'Sandy Reef', water: ['#2aa6b6', '#0b4552'], mud: '#8a5f4a', mudDark: '#5e3d2e', mudLight: '#b08068', rim: '#e0b79a',
+    wall: '#ff8fa3', wallDark: '#c4566c', mortar: '#6a2a3a', steel: '#3e4a55', steelHi: '#5e6c7a', steelLo: '#232a32',
+    rock: ['#e0dcd2', '#8c8678'], chip: '#f0c060' },
+  { name: 'Sunken Ship', water: ['#2b6a80', '#081e2a'], mud: '#5c4c42', mudDark: '#3d3029', mudLight: '#83705f', rim: '#b89f86',
+    wall: '#c98a4b', wallDark: '#7d5228', mortar: '#3a2412', steel: '#2f3b44', steelHi: '#4b5b66', steelLo: '#182026',
+    rock: ['#d5d9dc', '#7b8389'], chip: '#3fb8b0' },
+  { name: 'Eel Trench', water: ['#22477a', '#060d22'], mud: '#3d5868', mudDark: '#263b48', mudLight: '#5e7f92', rim: '#8fb4c8',
+    wall: '#7ee0c0', wallDark: '#3a9a80', mortar: '#163c34', steel: '#2a3346', steelHi: '#45526c', steelLo: '#151a26',
+    rock: ['#d8dee8', '#7d8698'], chip: '#38d0a8' },
+  { name: 'Midnight Abyss', water: ['#33246a', '#04020e'], mud: '#4a3a6a', mudDark: '#2e2346', mudLight: '#6c5a92', rim: '#a594d6',
+    wall: '#ffd166', wallDark: '#b8892a', mortar: '#4a3510', steel: '#26223e', steelHi: '#433d68', steelLo: '#121022',
+    rock: ['#e0dcf0', '#8a84a8'], chip: '#ff8ad8' }
 ];
 
 /* ============================================================
@@ -280,6 +305,8 @@ const WORLDS = [
      P start     X exit shell   c crab   j jellyfish   a algae
      m glow coral   f catfish   b puffer bomb   t clock bubble
      1 2 3 keys (red, yellow, blue)   7 8 9 their gates   ? random fill
+     ~ sand   + bubble pearl   u/U and y/Y whirlpool pairs   k/K clam door (K runs half a beat later)
+     e eel swimming sideways   E eel swimming up and down
    `put` ops run after the map: [ch,x,y] [ch,x,y,w,h] ['row',ch,x,y,n,step]
      ['ring',' ',x,y,w,h] = a water loop with a mud core and a mud margin
    ============================================================ */
@@ -481,11 +508,180 @@ const LEVELS = [
       ['ring', ' ', 8, 6, 5, 3], ['j', 8, 6],
       ['ring', ' ', 30, 17, 6, 3], ['c', 30, 17],
       ['.', 19, 8, 7, 7], ['row', 'o', 20, 9, 3, 2], ['m', 19, 11, 7, 1], [' ', 19, 12, 7, 2],
-      ['.', 35, 8, 3, 3], ['a', 36, 9]] }
+      ['.', 35, 8, 3, 3], ['a', 36, 9]] },
+
+  // ---------------- World 5: Sandy Reef ----------------
+  { name: 'Sand Slide', world: 4, need: 10, time: 150,
+    hint: 'Sand falls like rocks, but it is soft: it never hurts you. Dig right through it!',
+    map: [
+      'P.....~~~~......~~~~..',
+      '......~~~~......~~~~..',
+      '..*...~~~~..*...~~~~..',
+      '......*..*......*..*..',
+      '.===........===.......',
+      '..~~~~~...o...~~~~~...',
+      '..~~~~~.......~~~~~...',
+      '..*.*.*...*...*.*.*...',
+      '......................',
+      '.....................X'] },
+  { name: 'Bubble Up', world: 4, need: 14, time: 170,
+    hint: 'Bubble pearls float UP! Dig above one and it rises. Catch it, or grab it at the top.',
+    map: [
+      'P.........................',
+      '..                      ..',
+      '..                      ..',
+      '..........................',
+      '..+...+...+...+...+...+...',
+      '.+.+.+.+.+.+.+.+.+.+.+.+..',
+      '..........................',
+      '..o....o....o....o....o...',
+      '..........................',
+      '.........................X'] },
+  { name: 'Dune Diggers', world: 4, need: 34, time: 220, w: 34, h: 18, pad: '?', seed: 1919,
+    fill: { '.': 0.5, '~': 0.2, 'o': 0.08, '*': 0.08, '+': 0.05, ' ': 0.09 },
+    hint: 'Sand piles up behind you, so grab the pearls before it fills your tunnels!',
+    put: [['.', 0, 0, 4, 3], ['P', 1, 1], ['X', 32, 16],
+      ['ring', ' ', 20, 3, 7, 4], ['c', 20, 3],
+      ['=', 6, 8, 10, 1], ['=', 18, 12, 12, 1],
+      ['.', 4, 13, 8, 3], ['row', '+', 5, 14, 4, 2]] },
+  { name: 'Sandcastle', world: 4, need: 32, time: 240, w: 36, h: 18, pad: '?', seed: 2020,
+    fill: { '.': 0.6, '~': 0.12, 'o': 0.1, '*': 0.07, '+': 0.03, ' ': 0.08 },
+    hint: 'A sandcastle full of pearls! Dig in from the top. Jellies nearby make 9 pearls each.',
+    put: [['.', 0, 0, 5, 4], ['P', 1, 1], ['X', 34, 16],
+      ['.', 11, 3, 14, 10], ['=', 12, 4, 12, 8], ['~', 13, 5, 10, 6], ['.', 17, 4, 2, 1],
+      ['row', '*', 14, 9, 5, 2], ['row', '*', 15, 7, 4, 2], ['row', 'o', 14, 5, 4, 2],
+      ['ring', ' ', 3, 10, 6, 4], ['j', 3, 10],
+      ['ring', ' ', 28, 3, 6, 4], ['j', 28, 3],
+      ['.', 26, 12, 8, 3], ['row', '+', 27, 13, 4, 2]] },
+
+  // ---------------- World 6: Sunken Ship ----------------
+  { name: 'Whirlpool Hop', world: 5, need: 10, time: 160,
+    hint: 'Whirlpools are magic doors! Swim into one and WHOOSH, you pop out of its partner.',
+    map: [
+      'P.......#u..........#y........',
+      '........#...........#.........',
+      '..*..*..#..*.....*..#..*...*..',
+      '........#...........#.........',
+      '........#....o.o....#..*...*..',
+      '........#...........#.........',
+      '..*..*..#..*.....*..#..*...*..',
+      '......U.#.........Y.#.........',
+      '........#...........#........X'] },
+  { name: 'Clam Doors', world: 5, need: 20, time: 200,
+    hint: 'Clam doors open and close. Swim through while they are open! Inside, wait for the next one.',
+    map: [
+      'P..............................',
+      '.====k====.====K====.====k====.',
+      '.=*.*.*.*=.=*.*.*.*=.=*.*.*.*=.',
+      '.=.*.*.*.=.=.*.*.*.=.=.*.*.*.=.',
+      '.=*.*.*.*=.=*.*.*.*=.=*.*.*.*=.',
+      '.=========.=========.=========.',
+      '..............................X'] },
+  { name: 'Shipwreck', world: 5, need: 30, time: 240, w: 36, h: 18, pad: '?', seed: 2323,
+    fill: { '.': 0.68, 'o': 0.1, '*': 0.09, ' ': 0.09, '~': 0.04 },
+    hint: 'The wreck is split in two. Find the whirlpool to get across!',
+    put: [['.', 0, 0, 5, 4], ['P', 1, 1], ['X', 34, 16],
+      ['#', 17, 0, 1, 18], ['.', 13, 7, 3, 3], ['u', 14, 8], ['.', 19, 2, 3, 3], ['U', 20, 3],
+      ['.', 3, 10, 8, 6], ['ring', ' ', 4, 11, 6, 4], ['c', 4, 11],
+      ['.', 23, 10, 10, 7], ['=', 24, 11, 8, 6], [' ', 25, 12, 6, 4], ['row', '*', 25, 15, 6, 1], ['row', '*', 25, 14, 6, 1], ['k', 27, 11]] },
+  { name: "Captain's Vault", world: 5, need: 40, time: 260, w: 36, h: 18, pad: '?', seed: 2424,
+    fill: { '.': 0.66, 'o': 0.13, '*': 0.08, ' ': 0.09, '~': 0.04 },
+    hint: 'The red key is locked in the captain\'s cabin. Only a whirlpool goes there!',
+    put: [['.', 0, 0, 5, 4], ['P', 1, 1], ['X', 34, 16],
+      ['#', 27, 0, 8, 6], [' ', 28, 1, 6, 4], ['u', 28, 2], ['1', 32, 3], ['*', 30, 4], ['*', 31, 4], ['*', 32, 1],
+      ['.', 5, 7, 3, 3], ['U', 6, 8],
+      ['.', 11, 10, 14, 8], ['=', 12, 11, 12, 6], [' ', 13, 12, 10, 4], ['*', 13, 14, 10, 2], ['7', 17, 11],
+      ['.', 26, 9, 9, 7], ['=', 27, 10, 7, 5], [' ', 28, 11, 5, 3], ['row', '*', 28, 13, 5, 1], ['K', 30, 10]] },
+
+  // ---------------- World 7: Eel Trench ----------------
+  { name: 'Eel Alley', world: 6, need: 16, time: 200,
+    hint: 'Eels zoom back and forth. Wait until one swims away, then dash across! A rock on an eel makes pearls.',
+    map: [
+      'P...........................',
+      '..*o*...*o*...*o*...*o*.....',
+      '............................',
+      'e                           ',
+      '..*.*...*.*...*.*...*.*.....',
+      '............................',
+      '                           e',
+      '..*.*...*.*...*.*...*.*.....',
+      '............................',
+      'e                           ',
+      '...........................X'] },
+  { name: 'Up and Down', world: 6, need: 18, time: 200,
+    hint: 'These eels swim up and down. Cross each tunnel when its eel is far away!',
+    map: [
+      'P...E..... ..... ..... .......',
+      '.*.. .*.*. .*.*. .*.*. .*.*...',
+      '.... ..... .....E..... .......',
+      '..*. ..o.. ..o.. ..o.. ..*.*..',
+      '.... ..*.. ..*.. ..*.. .......',
+      '.*.. .....E..... ..... .*.*...',
+      '.... .*.*. .*.*. .*.*. ..=k=..',
+      '..*. ..... ..... .....E..=.=..',
+      '.... ..*.. ..*.. ..*.. ..=X=..',
+      '.... ..... ..... ..... ..===..'] },
+  { name: 'Electric Garden', world: 6, need: 30, time: 240, w: 36, h: 18, pad: '?', seed: 2727,
+    fill: { '.': 0.7, 'o': 0.12, '*': 0.08, ' ': 0.06, '+': 0.04 }, algaeMax: 120, algaeSlow: 200,
+    hint: 'When algae touches an eel: ZAP, pearls! Let the algae grow into the eel tunnels.',
+    put: [['.', 0, 0, 5, 4], ['P', 1, 1], ['X', 34, 16],
+      ['.', 6, 3, 26, 3], [' ', 7, 4, 24, 1], ['e', 30, 4],
+      ['.', 4, 9, 28, 3], [' ', 5, 10, 26, 1], ['e', 5, 10],
+      ['.', 8, 13, 24, 3], [' ', 9, 14, 22, 1], ['e', 20, 14],
+      ['.', 14, 6, 4, 3], ['a', 15, 7], ['.', 22, 11, 3, 2], ['a', 23, 12]] },
+  { name: 'Trench Run', world: 6, need: 45, time: 190, w: 38, h: 20, pad: '?', seed: 2828,
+    fill: { '.': 0.52, 'o': 0.24, '*': 0.1, ' ': 0.09, '+': 0.05 },
+    hint: 'A rocky race past the eels! Grab the clock bubbles for more time.',
+    put: [['.', 0, 0, 5, 4], ['P', 1, 1], ['X', 36, 18], ['t', 18, 9], ['t', 31, 4],
+      ['.', 6, 6, 28, 3], [' ', 7, 7, 26, 1], ['e', 32, 7],
+      ['.', 3, 14, 30, 3], [' ', 4, 15, 28, 1], ['e', 4, 15],
+      ['.', 21, 0, 3, 6], [' ', 22, 0, 1, 6], ['E', 22, 1]] },
+
+  // ---------------- World 8: Midnight Abyss ----------------
+  { name: 'Abyss Gate', world: 7, need: 34, time: 260, w: 38, h: 20, pad: '?', seed: 2929,
+    fill: { '.': 0.66, 'o': 0.13, '*': 0.08, ' ': 0.09, '~': 0.04 },
+    hint: 'Grab the puffers and the key. The whirlpool leads to the treasure side!',
+    put: [['.', 0, 0, 5, 4], ['P', 1, 1], ['X', 36, 18],
+      ['#', 19, 0, 1, 20], ['.', 15, 4, 3, 3], ['y', 16, 5], ['.', 21, 13, 3, 3], ['Y', 22, 14],
+      ['b', 4, 8], ['b', 12, 15], ['.', 8, 11, 3, 3], ['2', 9, 12],
+      ['.', 23, 2, 12, 7], ['=', 24, 3, 10, 5], ['*', 25, 4, 8, 3], ['8', 28, 3],
+      ['.', 24, 10, 10, 6], ['=', 25, 11, 8, 4], ['*', 26, 12, 6, 2],
+      ['ring', ' ', 4, 14, 7, 4], ['j', 4, 14]] },
+  { name: 'Bubble Storm', world: 7, need: 50, time: 260, w: 38, h: 20, pad: '?', seed: 3030,
+    fill: { '.': 0.55, '~': 0.12, 'o': 0.08, '*': 0.06, '+': 0.1, ' ': 0.09 }, algaeMax: 100,
+    hint: 'Bubbles everywhere! Remember: they float up. Algae and jellies make even more pearls.',
+    put: [['.', 0, 0, 5, 4], ['P', 1, 1], ['X', 36, 18],
+      ['ring', ' ', 8, 3, 6, 4], ['j', 8, 3],
+      ['ring', ' ', 26, 12, 7, 5], ['j', 26, 12],
+      ['.', 15, 13, 5, 4], ['a', 17, 15],
+      ['.', 20, 1, 12, 3], [' ', 21, 2, 10, 1], ['row', '+', 21, 3, 5, 2]] },
+  { name: 'Glow Wreck', world: 7, need: 36, time: 260, w: 38, h: 20, pad: '?', seed: 3131,
+    fill: { '.': 0.66, 'o': 0.14, '*': 0.07, ' ': 0.09, '~': 0.04 },
+    hint: 'Glowing coral in the wreck! Drop rocks through it, but mind the eel and the clams.',
+    put: [['.', 0, 0, 5, 4], ['P', 1, 1], ['X', 36, 18],
+      ['.', 4, 4, 16, 7], ['row', 'o', 5, 5, 7, 2], ['m', 5, 7, 14, 1], [' ', 5, 8, 14, 2],
+      ['.', 6, 13, 26, 3], [' ', 7, 14, 24, 1], ['e', 30, 14],
+      ['.', 24, 3, 11, 8], ['=', 25, 4, 9, 6], [' ', 26, 5, 7, 4], ['*', 26, 7, 7, 2], ['k', 28, 4], ['K', 31, 4]] },
+  { name: 'The Pearl Palace', world: 7, need: 46, time: 320, w: 40, h: 22, pad: '?', seed: 3232,
+    fill: { '.': 0.64, 'o': 0.13, '*': 0.07, ' ': 0.09, '~': 0.04, '+': 0.03 }, algaeMax: 90,
+    hint: 'The Pearl Palace! Whirlpools, clams, eels, keys, puffers... you know them all now. Go!',
+    put: [['.', 0, 0, 5, 4], ['P', 1, 1], ['X', 38, 20],
+      ['=', 15, 0, 10, 6], ['*', 16, 1, 8, 4], ['7', 19, 5], ['.', 14, 6, 12, 1],
+      ['#', 32, 1, 7, 5], [' ', 33, 2, 5, 3], ['u', 33, 3], ['1', 36, 3], ['*', 35, 2], ['*', 37, 2], ['.', 6, 9, 3, 3], ['U', 7, 10],
+      ['.', 2, 13, 30, 3], [' ', 3, 14, 28, 1], ['e', 30, 14],
+      ['.', 24, 16, 12, 5], ['=', 25, 17, 10, 3], [' ', 26, 18, 8, 1], ['row', '*', 26, 18, 8, 1], ['k', 29, 17], ['K', 32, 17],
+      ['b', 3, 18], ['b', 12, 4],
+      ['ring', ' ', 9, 16, 6, 4], ['j', 9, 16],
+      ['.', 26, 7, 8, 6], ['row', 'o', 27, 8, 3, 2], ['m', 26, 10, 7, 1], [' ', 26, 11, 7, 2],
+      ['.', 2, 6, 3, 3], ['a', 3, 7], ['f', 20, 10], ['.', 17, 8, 8, 4], [' ', 18, 9, 6, 2], ['row', '*', 18, 10, 6, 1]] }
 ];
+
+// saves from before caves 17-32 stopped at 16: if the last unlocked cave is already cleared, open the next one
+while (save.unlocked < LEVELS.length && save.best[save.unlocked - 1] != null) save.unlocked++;
 
 const CH = { ' ': T.EMPTY, '.': T.MUD, '=': T.WALL, '#': T.STEEL, 'o': T.ROCK, '*': T.PEARL, 'X': T.EXIT, 'P': T.ENTRY,
   'c': T.CRAB, 'j': T.JELLY, 'a': T.ALGAE, 'm': T.MAGIC, 'f': T.FISH, 'b': T.BOMBITEM, 't': T.CLOCK,
+  '~': T.SAND, '+': T.BUBBLE, 'u': T.PORTAL, 'U': T.PORTAL, 'y': T.PORTAL, 'Y': T.PORTAL, 'k': T.CLAM, 'K': T.CLAM, 'e': T.EEL, 'E': T.EEL,
   '1': T.KEY, '2': T.KEY, '3': T.KEY, '7': T.GATE, '8': T.GATE, '9': T.GATE };
 
 /* build the char grid for a level (interior only), then wrap it in steel */
@@ -537,7 +733,7 @@ const G = {
   parts: [], floats: [], toast: null, flash: 0, shake: 0,
   dirStack: [], queuedDir: -1, bombQueued: false,
   stick: null, holds: {}, press: null, touchMode: false,
-  cavesSel: 0, helpFrom: 'title', newLotl: null, lotlPreview: 0, motes: []
+  cavesSel: 0, helpPage: 0, helpFrom: 'title', newLotl: null, lotlPreview: 0, motes: []
 };
 let C = null;   // the current cave
 // SIM is set while the solver runs a copy of a cave: it carries the solver's input
@@ -567,7 +763,8 @@ function newCave(idx) {
     pending: [], sfx: {}, phase: 'reveal', phaseT: 0, entry: -1, exit: -1,
     player: { i: -1, alive: true, face: 1, lastDir: 1, pushTarget: -1, pushCount: 0, idle: 0, cause: '', lastBump: -1, moveTick: -9 },
     chain: 0, chainT: 0, camX: 0, camY: 0, hintT: 0, hintGone: false, stuck: 0, restartAsk: -9, quietT: 0, seenPearls: 0, warned: -1, result: null,
-    pearlsSeen: 0, rs: (Math.random() * 4294967296) | 0
+    pearlsSeen: 0, rs: (Math.random() * 4294967296) | 0,
+    bg: new Uint8Array(n), clams: [], portals: {}
   };
   const rand = mulberry32(idx * 31 + 5);
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
@@ -581,6 +778,9 @@ function newCave(idx) {
     if (tt === T.GATE) c.d[i] = +ch - 7;
     if (tt === T.CRAB || tt === T.JELLY) c.d[i] = 3;
     if (tt === T.FISH) { c.d[i] = 1; c.face[i] = 1; }
+    if (tt === T.EEL) { c.d[i] = ch === 'E' ? 0 : 3; c.face[i] = -1; }
+    if (tt === T.PORTAL) { const pr = ch === 'u' || ch === 'U' ? 0 : 1; c.d[i] = pr; (c.portals[pr] = c.portals[pr] || []).push(i); }
+    if (tt === T.CLAM) { c.bg[i] = ch === 'K' ? 2 : 1; c.clams.push(i); }
     if (tt === T.ENTRY) c.entry = i;
     if (tt === T.EXIT) c.exit = i;
     if (tt === T.BOMBITEM) c.hasBombs = true;
@@ -608,6 +808,8 @@ function canMove(c) {
   for (let dir = 0; dir < 4; dir++) {
     const ti = i + OFF[dir], tt = t[ti];
     if (tt === T.EMPTY || tt === T.MUD || tt === T.PEARL || tt === T.KEY || tt === T.BOMBITEM || tt === T.CLOCK) return true;
+    if (tt === T.SAND || tt === T.BUBBLE || tt === T.CLAM) return true;   // a shut clam opens again soon
+    if (tt === T.PORTAL) { const d2 = portalExit(c, ti, dir); if (d2 >= 0 && (t[d2] === T.EMPTY || t[d2] === T.MUD || t[d2] === T.SAND || isPearlish(t[d2]))) return true; }
     if (tt === T.GATE && c.keys[c.d[ti]]) return true;
     if (tt === T.EXIT && c.exitOpen) return true;
     if (tt === T.ROCK && (dir === 1 || dir === 3) && !c.fall[ti] && t[ti + OFF[dir]] === T.EMPTY) return true;
@@ -648,6 +850,7 @@ function stepCave() {
   c.tick++;
   if (c.pending.length) { const list = c.pending; c.pending = []; for (const p of list) explodeAt(p.i, p.pearl); }
   if (c.magic.state === 'active' && --c.magic.t <= 0) c.magic.state = 'spent';
+  if (c.clams.length) clamUpdate();
   c.algaeOpen = false; c.algaeCount = 0;
   if (c.phase === 'play' && c.player.alive && c.t[c.player.i] === T.PLAYER) {
     playerUpdate(c.player.i);
@@ -658,7 +861,9 @@ function stepCave() {
     const i = y * w + x;
     if (c.stamp[i] === tick) continue;
     switch (t[i]) {
-      case T.ROCK: case T.PEARL: fallUpdate(i); break;
+      case T.ROCK: case T.PEARL: case T.SAND: fallUpdate(i); break;
+      case T.BUBBLE: riseUpdate(i); break;
+      case T.EEL: eelUpdate(i); break;
       case T.CRAB: enemyUpdate(i, T.CRAB); break;
       case T.JELLY: enemyUpdate(i, T.JELLY); break;
       case T.FISH: fishUpdate(i); break;
@@ -678,13 +883,17 @@ function stepCave() {
 function fallUpdate(i) {
   const c = C, t = c.t, b = i + c.w, tb = t[b];
   if (tb === T.EMPTY) { c.fall[i] = 1; move(i, b); return; }
+  if (t[i] === T.SAND) {   // soft: it just piles up
+    if (c.fall[i]) { c.fall[i] = 0; sfx('sand'); }
+    return;
+  }
   if (c.fall[i]) {
     if (tb === T.PLAYER) {
       if (t[i] === T.PEARL) { collectPearl(i); setCell(i, T.EMPTY); floatText(b, 'CATCH!', '#fff7c2'); return; }   // pearls land in your arms
       c.player.cause = 'rock'; explodeAt(b, false); return;
     }
     if (tb === T.CRAB || tb === T.BOMB) { explodeAt(b, false); return; }
-    if (tb === T.JELLY || tb === T.FISH) { explodeAt(b, true); return; }
+    if (tb === T.JELLY || tb === T.FISH || tb === T.EEL) { explodeAt(b, true); return; }
     if (tb === T.MAGIC && c.magic.state !== 'spent') { magicPass(i); return; }
   }
   if (ROUND[tb] && !c.fall[b]) {
@@ -696,6 +905,49 @@ function fallUpdate(i) {
     if (t[i] === T.ROCK) { sfx('land'); if (!SIM) G.shake = Math.max(G.shake, 2.5); dust(i); }
     else sfx('clink');
   }
+}
+
+// bubble pearls float up through water (and roll off round things above them)
+function riseUpdate(i) {
+  const c = C, t = c.t, a = i - c.w, ta = t[a];
+  if (ta === T.EMPTY) { c.fall[i] = 1; move(i, a); return; }
+  if (ta === T.PLAYER && c.fall[i]) { collectPearl(i); setCell(i, T.EMPTY); floatText(a, 'CATCH!', '#e8fbff'); return; }
+  if (ROUND[ta] && !c.fall[a]) {
+    if (t[i - 1] === T.EMPTY && t[a - 1] === T.EMPTY) { c.fall[i] = 1; move(i, i - 1); return; }
+    if (t[i + 1] === T.EMPTY && t[a + 1] === T.EMPTY) { c.fall[i] = 1; move(i, i + 1); return; }
+  }
+  if (c.fall[i]) { c.fall[i] = 0; sfx('pop'); }
+}
+// eels swim in a straight line and turn back when something's in the way
+function eelUpdate(i) {
+  const c = C, t = c.t;
+  for (let k = 0; k < 4; k++) {
+    const n = t[i + OFF[k]];
+    if (n === T.PLAYER || n === T.ALGAE) { if (n === T.PLAYER) c.player.cause = 'eel'; explodeAt(i, true); return; }
+  }
+  if (c.tick % CRITTER_EVERY) return;
+  let d = c.d[i];
+  if (t[i + OFF[d]] !== T.EMPTY) { d = (d + 2) & 3; c.d[i] = d; }
+  if (t[i + OFF[d]] === T.EMPTY) { setFace(i, d); move(i, i + OFF[d]); }
+}
+// clam doors open and shut on a beat; a shut clam is solid, and it never shuts on anything
+function clamOpenAt(c, i, tick) {
+  const [op, sh] = c.L.clam || [CLAM_OPEN, CLAM_SHUT], per = op + sh;
+  return ((tick + (c.bg[i] === 2 ? (per >> 1) : 0)) % per) < op;
+}
+function clamUpdate() {
+  const c = C;
+  for (const i of c.clams) {
+    const open = clamOpenAt(c, i, c.tick);
+    if (open && c.t[i] === T.CLAM) { setCell(i, T.EMPTY); sfx('clam'); }
+    else if (!open && c.t[i] === T.EMPTY) { setCell(i, T.CLAM); sfx('clam'); }
+  }
+}
+function portalExit(c, ti, dir) {   // where you pop out when you swim into whirlpool ti going dir
+  const pair = c.portals[c.d[ti]];
+  if (!pair || pair.length < 2) return -1;
+  const other = pair[0] === ti ? pair[1] : pair[0];
+  return other + (dir === 0 ? -c.w : dir === 1 ? 1 : dir === 2 ? c.w : -1);   // c's own offsets (the solver runs other caves)
 }
 
 function magicPass(i) {
@@ -809,7 +1061,7 @@ function explodeAt(ci, pearl) {
     if (UNBREAKABLE[tn]) continue;
     if (n !== ci) {
       if (tn === T.CRAB || tn === T.BOMB) c.pending.push({ i: n, pearl: false });
-      else if (tn === T.JELLY || tn === T.FISH) c.pending.push({ i: n, pearl: true });
+      else if (tn === T.JELLY || tn === T.FISH || tn === T.EEL) c.pending.push({ i: n, pearl: true });
     }
     if (tn === T.FISH) {
       const got = c.aux[n];
@@ -817,7 +1069,7 @@ function explodeAt(ci, pearl) {
       c.score += 50;
     }
     if (tn === T.CRAB) c.score += 25;
-    if (tn === T.JELLY) c.score += 50;
+    if (tn === T.JELLY || tn === T.EEL) c.score += 50;
     if (tn === T.PLAYER) killPlayer(c.player.cause || 'boom');
     setCell(n, T.BOOM); c.aux[n] = res;
   }
@@ -871,8 +1123,22 @@ function playerUpdate(i) {
   let ok = false;
   switch (tt) {
     case T.EMPTY: ok = !grab; break;
-    case T.MUD: ok = true; digFx(ti, dir); sfx('dig'); break;
-    case T.PEARL: ok = true; collectPearl(ti); break;
+    case T.MUD: case T.SAND: ok = true; digFx(ti, dir); sfx('dig'); break;
+    case T.PEARL: case T.BUBBLE: ok = true; collectPearl(ti); break;
+    case T.PORTAL: {
+      if (grab) break;
+      const dest = portalExit(c, ti, dir), dt = dest >= 0 ? t[dest] : T.STEEL;
+      if (dt === T.EMPTY || dt === T.MUD || dt === T.SAND || isPearlish(dt)) {
+        if (isPearlish(dt)) collectPearl(dest);
+        sparkle(ti, 12, '#9ff7ff'); sparkle(dest, 12, '#9ff7ff'); sfx('warp');
+        setCell(i, T.EMPTY); setCell(dest, T.PLAYER); c.stamp[dest] = c.tick;
+        P.i = dest; P.moveTick = c.tick; P.warpT = G.time; P.pushTarget = -1; P.lastBump = -1;
+        return;
+      }
+      if (P.lastBump !== ti) { floatText(ti, 'Blocked!', '#e0f8ff'); sfx('bump'); }
+      P.lastBump = ti;
+      break;
+    }
     case T.KEY: ok = true; c.keys[c.d[ti]] = 1; sfx('key'); showToast('Got the ' + KEY_NAMES[c.d[ti]] + ' key!', KEY_COLORS[c.d[ti]]); sparkle(ti, 10, KEY_COLORS[c.d[ti]]); break;
     case T.BOMBITEM: ok = true; c.bombs++; sfx('pickup'); floatText(ti, '+1 puffer', '#ffe27a'); break;
     case T.CLOCK: ok = true; c.timeLeft += 15; sfx('chime'); floatText(ti, '+15 sec', '#bff6ff'); sparkle(ti, 10, '#bff6ff'); break;
@@ -900,7 +1166,7 @@ function playerUpdate(i) {
       break;
   }
   P.pushTarget = -1;
-  if (tt !== T.GATE && tt !== T.EXIT) P.lastBump = -1;
+  if (tt !== T.GATE && tt !== T.EXIT && tt !== T.PORTAL) P.lastBump = -1;
   if (!ok) return;
   if (grab) {
     if (tt !== T.EMPTY) { setCell(ti, T.EMPTY); sfx('slurp'); P.slurp = { at: G.time, dir }; }
@@ -1210,7 +1476,7 @@ function updateCamera(dt) {
 }
 function objPos(i, f) {
   const c = C, x = i % c.w, y = (i / c.w) | 0;
-  const tt = c.t[i], span = tt === T.CRAB || tt === T.JELLY || tt === T.FISH ? CRITTER_EVERY : 1;
+  const tt = c.t[i], span = tt === T.CRAB || tt === T.JELLY || tt === T.FISH || tt === T.EEL ? CRITTER_EVERY : 1;
   const age = c.tick - c.fromTick[i];
   if (c.from[i] >= 0 && age >= 0 && age < span) {
     f = (age + f) / span;   // slow critters glide across the whole gap between their steps
@@ -1241,6 +1507,7 @@ function ensureSprites(world) {
   SPR.steel = makeSprite(g => drawSteelTile(g, p));
   SPR.rock = makeSprite(g => drawRockTile(g, p));
   SPR.pearl = makeSprite(g => drawPearlTile(g));
+  SPR.sand = makeSprite(g => drawSandTile(g));
 }
 function rr(g, x, y, w, h, r) {
   g.beginPath();
@@ -1258,6 +1525,16 @@ function drawMudTile(g, p, v) {
   g.globalAlpha = 0.5; g.fillStyle = p.mudLight;
   for (let k = 0; k < 3; k++) { g.beginPath(); g.arc(6 + r() * (TS - 12), 6 + r() * (TS - 12), 1.4, 0, TAU); g.fill(); }
   g.globalAlpha = 1;
+}
+function drawSandTile(g) {
+  g.fillStyle = '#e8cd8c'; g.fillRect(0, 0, TS, TS);
+  g.fillStyle = '#f3dea6'; g.fillRect(0, 0, TS, 6);   // sunlit top
+  const r = mulberry32(4242);
+  for (let k = 0; k < 26; k++) {
+    g.fillStyle = r() < 0.6 ? '#c7a35b' : '#fff3cc';
+    g.beginPath(); g.arc(4 + r() * (TS - 8), 9 + r() * (TS - 13), 0.9 + r() * 1.3, 0, TAU); g.fill();
+  }
+  g.fillStyle = 'rgba(150,110,50,0.35)'; g.fillRect(0, TS - 3, TS, 3);
 }
 function drawWallTile(g, p) {
   g.fillStyle = p.mortar; g.fillRect(0, 0, TS, TS);
@@ -1658,6 +1935,83 @@ function drawBoom(cx, cy, stage, f, pearl, i) {
 /* ============================================================
    DRAW THE CAVE
    ============================================================ */
+function drawBubble(px, py, i) {
+  const wob = Math.sin(G.time * 3 + i) * 1.5, r = TS * 0.41 + wob * 0.4;
+  const y = py + wob;
+  ctx.drawImage(SPR.pearl, px - TS * 0.31, y - TS * 0.31, TS * 0.62, TS * 0.62);
+  const g = ctx.createRadialGradient(px - r * 0.3, y - r * 0.4, r * 0.1, px, y, r);
+  g.addColorStop(0, 'rgba(255,255,255,0.35)'); g.addColorStop(0.7, 'rgba(160,230,255,0.12)'); g.addColorStop(1, 'rgba(190,245,255,0.45)');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(px, y, r, 0, TAU); ctx.fill();
+  ctx.strokeStyle = 'rgba(235,252,255,0.95)'; ctx.lineWidth = 2.5; ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.arc(px, y, r * 0.72, Math.PI * 1.1, Math.PI * 1.45); ctx.stroke();
+}
+function drawPortal(px, py, pair, s) {
+  s = s || 1;
+  const col = pair ? '#c78bff' : '#6ff0ff', r = TS * 0.46 * s;
+  ctx.save(); ctx.translate(px, py);
+  const g = ctx.createRadialGradient(0, 0, 2, 0, 0, r);
+  g.addColorStop(0, '#ffffff'); g.addColorStop(0.25, col); g.addColorStop(1, pair ? '#2a1058' : '#06384a');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.fill();
+  ctx.rotate(-G.time * 3.2);
+  ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth = 3 * s; ctx.lineCap = 'round';
+  for (let k = 0; k < 3; k++) {
+    ctx.rotate(TAU / 3);
+    ctx.beginPath();
+    for (let a = 0; a <= 1; a += 0.1) { const rr2 = r * (0.18 + a * 0.75), ang = a * 2.6; const x = Math.cos(ang) * rr2, y = Math.sin(ang) * rr2; a ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+    ctx.stroke();
+  }
+  ctx.restore();
+  ctx.strokeStyle = INK; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(px, py, r, 0, TAU); ctx.stroke();
+}
+// a clam door: a = 0 shut, 1 wide open; warn = about to snap shut
+function drawClam(px, py, a, warn) {
+  const wob = warn ? Math.sin(G.time * 40) * 2 : 0;
+  const gap = a * TS * 0.34;
+  for (const side of [-1, 1]) {
+    ctx.save();
+    ctx.translate(px, py + side * gap + (side < 0 ? wob : -wob));
+    ctx.scale(1, 1 - a * 0.62);
+    ctx.beginPath(); ctx.ellipse(0, 0, TS * 0.47, TS * 0.42, 0, side < 0 ? Math.PI : 0, side < 0 ? TAU : Math.PI); ctx.closePath();
+    ctx.fillStyle = '#ffb3c6'; ctx.fill();
+    ctx.strokeStyle = '#e06f93'; ctx.lineWidth = 2.5;
+    for (let k = 1; k < 6; k++) {
+      const ang = (side < 0 ? Math.PI : 0) + (k / 6) * Math.PI;
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(Math.cos(ang) * TS * 0.42, Math.sin(ang) * TS * 0.37); ctx.stroke();
+    }
+    ctx.beginPath(); ctx.ellipse(0, 0, TS * 0.47, TS * 0.42, 0, side < 0 ? Math.PI : 0, side < 0 ? TAU : Math.PI); ctx.closePath();
+    ctx.strokeStyle = INK; ctx.lineWidth = 3; ctx.stroke();
+    ctx.restore();
+  }
+  if (a < 0.2) { ctx.fillStyle = '#fff6fa'; ctx.beginPath(); ctx.arc(px, py, 4, 0, TAU); ctx.fill(); }   // a peek of pearl at the lips
+}
+// an eel: wiggly ribbon swimming along dir (0 up, 1 right, 2 down, 3 left)
+function drawEel(px, py, dir, seed, s) {
+  s = s || 1;
+  ctx.save(); ctx.translate(px, py);
+  if (dir === 3) ctx.scale(-1, 1); else if (dir === 0) ctx.rotate(-Math.PI / 2); else if (dir === 2) ctx.rotate(Math.PI / 2);
+  ctx.scale(s, s);
+  const n = 11, pts = [];
+  for (let k = 0; k < n; k++) {
+    const u = k / (n - 1), x = (-0.62 + u * 1.08) * TS;
+    const y = Math.sin(G.time * 11 + seed + u * 5) * TS * 0.11 * (1 - u * 0.8);
+    pts.push([x, y, TS * (0.07 + 0.11 * Math.sin(Math.min(1, u * 1.4) * Math.PI * 0.5))]);
+  }
+  for (const pass of [0, 1]) {
+    ctx.fillStyle = pass ? '#34d6a4' : INK;
+    for (const [x, y, r] of pts) { ctx.beginPath(); ctx.arc(x, y, r + (pass ? 0 : 3), 0, TAU); ctx.fill(); }
+  }
+  ctx.fillStyle = '#fff27a';
+  for (let k = 2; k < n - 1; k += 2) { const [x, y, r] = pts[k]; ctx.beginPath(); ctx.arc(x, y + r * 0.35, r * 0.35, 0, TAU); ctx.fill(); }
+  const [hx, hy] = pts[n - 1];
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(hx + 2, hy - 5, 5.5, 0, TAU); ctx.fill();
+  ctx.fillStyle = INK; ctx.beginPath(); ctx.arc(hx + 3.5, hy - 5, 2.8, 0, TAU); ctx.fill();
+  if (Math.sin(G.time * 7 + seed) > 0.4) {   // a little zap
+    ctx.strokeStyle = '#fff27a'; ctx.lineWidth = 2.5; ctx.lineJoin = 'round';
+    ctx.beginPath(); ctx.moveTo(hx + 10, hy - 14); ctx.lineTo(hx + 16, hy - 8); ctx.lineTo(hx + 12, hy - 6); ctx.lineTo(hx + 19, hy + 1); ctx.stroke();
+  }
+  ctx.restore();
+}
 function drawWater(wd, top) {
   const g = ctx.createLinearGradient(0, top, 0, H);
   g.addColorStop(0, wd.water[0]); g.addColorStop(1, wd.water[1]);
@@ -1709,6 +2063,12 @@ function drawCave() {
     else if (tt === T.MAGIC) drawMagic(px + TS / 2, py + TS / 2, i);
     else if (tt === T.GATE) drawGate(px + TS / 2, py + TS / 2, KEY_COLORS[c.d[i]]);
     else if (tt === T.EXIT) drawExit(px + TS / 2, py + TS / 2, c.exitOpen);
+    else if (tt === T.PORTAL) drawPortal(px + TS / 2, py + TS / 2, c.d[i]);
+    if (c.bg[i]) {   // clam door: shut (solid) or open (you can swim through)
+      const k = clamp((c.tick - c.born[i] + f) / 1.5, 0, 1);
+      const a = tt === T.CLAM ? 1 - k : (tt === T.EMPTY ? k : 1);
+      drawClam(px + TS / 2, py + TS / 2, a, tt !== T.CLAM && !clamOpenAt(c, i, c.tick + 3));
+    }
   }
   // algae: outline pass then fill pass so the blobs merge
   let anyAlgae = false;
@@ -1737,7 +2097,7 @@ function drawCave() {
   let playerAt = null;
   for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
     const i = y * w + x, tt = t[i];
-    if (tt < T.ROCK || tt === T.EXIT || tt === T.MAGIC || tt === T.GATE || tt === T.ALGAE) continue;
+    if (tt < T.ROCK || tt === T.EXIT || tt === T.MAGIC || tt === T.GATE || tt === T.ALGAE || tt === T.PORTAL || tt === T.CLAM) continue;
     const [px, py] = objPos(i, f);
     // things resting in the mud get a mud backing so they look embedded, not floating in a hole
     if (EMBED[tt] && !c.fall[i] && c.fromTick[i] !== c.tick) {
@@ -1762,6 +2122,9 @@ function drawCave() {
       case T.PLAYER: playerAt = [px, py]; break;
       case T.CRAB: drawCrab(px, py, i, 1.12); break;
       case T.JELLY: drawJelly(px, py, i, 1.2); break;
+      case T.SAND: ctx.drawImage(SPR.sand, px - TS / 2, py - TS / 2, TS + 0.6, TS + 0.6); break;
+      case T.BUBBLE: drawBubble(px, py, i); break;
+      case T.EEL: drawEel(px, py, c.d[i], i); break;
       case T.FISH: drawFish(px, py, i, c.face[i], c.aux[i]); break;
       case T.KEY: drawKey(px, py, KEY_COLORS[c.d[i]]); break;
       case T.BOMBITEM: drawPuffer(px, py, false, 0); break;
@@ -1993,6 +2356,7 @@ const CAUSE = {
   rock: ['BONK!', 'A rock landed on you.'],
   crab: ['PINCHED!', 'A crab got too close.'],
   jelly: ['ZAPPED!', 'A jellyfish got too close.'],
+  eel: ['BZZZT!', 'An eel got too close. Wait until it swims away!'],
   bomb: ['KA-POOF!', 'Too close to the puffer!'],
   boom: ['KA-BOOM!', 'You got caught in a blast.'],
   time: ["TIME'S UP!", 'Be a little quicker next time.']
@@ -2146,11 +2510,18 @@ function drawCaves() {
   txt('CHOOSE A CAVE', W / 2, 46, 46, '#fff', 'center', 800, 8);
   txt(`★ ${totalStars()} / ${LEVELS.length * 3}`, W - 60, 46, 26, '#ffe27a', 'right', 800, 5);
   button('back', 30, 18, 130, 54, '◀ BACK', { act: goTitle, color: '#8a93a6', size: 24, back: true, nav: false });
-  const cols = 4, gap = 16, top = 96, left = 120;
-  const cw = Math.min(260, (W - left - 40 - gap * (cols - 1)) / cols), ch = 128;
+  const cols = 4, gap = 16, top = 92, left = 120;
+  const cw = Math.min(260, (W - left - 40 - gap * (cols - 1)) / cols), ch = 118;
   const rowH = ch + 22;
-  for (let wi = 0; wi < WORLDS.length; wi++) {
-    const y = top + wi * rowH;
+  // 16 caves (4 worlds) per page
+  const pages = Math.ceil(LEVELS.length / 16), page = Math.floor(G.cavesSel / 16);
+  if (pages > 1) {
+    const by = H - 58, bw = 230;
+    if (page > 0) button('pgPrev', W / 2 - bw - 12, by, bw, 48, '◀ CAVES ' + ((page - 1) * 16 + 1) + '–' + page * 16, { act: () => { G.cavesSel -= 16; Snd.ui(); }, color: '#7aa8ff', size: 22, nav: false });
+    if (page < pages - 1) button('pgNext', W / 2 + 12, by, bw, 48, 'CAVES ' + ((page + 1) * 16 + 1) + '–' + Math.min(LEVELS.length, (page + 2) * 16) + ' ▶', { act: () => { G.cavesSel = Math.min(LEVELS.length - 1, G.cavesSel + 16); Snd.ui(); }, color: save.unlocked > (page + 1) * 16 ? '#3ccf7a' : '#7aa8ff', size: 22, nav: false });
+  }
+  for (let wi = page * 4; wi < Math.min(WORLDS.length, page * 4 + 4); wi++) {
+    const y = top + (wi - page * 4) * rowH;
     const wd = WORLDS[wi];
     ctx.save(); ctx.translate(left - 60, y + ch / 2); ctx.rotate(-Math.PI / 2);
     txt(wd.name.toUpperCase(), 0, 0, 17, '#fff', 'center', 800, 4);
@@ -2173,11 +2544,11 @@ function drawCaves() {
         txt(String(idx + 1), x + 34, y + 34, 40, '#fff', 'center', 800, 6);
         txt(L.name, x + cw / 2 + 18, y + 34, fitSize(L.name, cw - 80, 22), '#fff', 'center', 800, 4);
         const st = save.stars[idx] || 0;
-        for (let s = 0; s < 3; s++) drawStarShape(x + cw / 2 + (s - 1) * 34, y + 76, 14, s < st);
+        for (let s = 0; s < 3; s++) drawStarShape(x + cw / 2 + (s - 1) * 34, y + 70, 14, s < st);
         if (save.best[idx] != null) txt(String(save.best[idx]), x + cw / 2, y + ch - 16, 18, '#fff', 'center', 800, 4);
         else txt('NEW!', x + cw / 2, y + ch - 16, 18, '#ffe27a', 'center', 800, 4);
       } else {
-        txt('🔒', x + cw / 2, y + 56, 36, '#fff', 'center', 600);
+        txt('🔒', x + cw / 2, y + 50, 36, '#fff', 'center', 600);
         txt(String(idx + 1), x + cw / 2, y + ch - 16, 18, '#9aa', 'center', 800);
       }
       ctx.restore();
@@ -2201,13 +2572,23 @@ const HELP = [
   [T.CLOCK, 'Clock bubbles give you 15 more seconds.'],
   [T.WALL, 'Coral walls are tough, but blasts break them. Grey bedrock never breaks.']
 ];
+const HELP2 = [
+  [T.SAND, 'Sand falls like rocks, but it is soft: it never hurts you. Dig right through it.'],
+  [T.BUBBLE, 'Bubble pearls float UP! Dig above one and catch it as it rises.'],
+  [T.PORTAL, 'Whirlpools: swim into one and WHOOSH, you pop out of its partner.'],
+  [T.CLAM, 'Clam doors open and close. Swim through while they are open!'],
+  [T.EEL, 'Eels zoom back and forth. Cross when they are far away. A rock on one makes pearls!'],
+  ['hint', 'Stuck? Tap 💡 (or press H) and the game shows you a good next move.'],
+  ['restart', 'Boxed in? Tap ↻ (or press R) to start the cave again. It never costs you anything.']
+];
 function drawHelp() {
-  drawWater(WORLDS[0], 0);
+  drawWater(WORLDS[G.helpPage ? 4 : 0], 0);
   ensureSprites(C ? C.L.world : 0);
-  txt('HOW TO PLAY', W / 2, 42, 44, '#fff', 'center', 800, 8);
-  button('back', 30, 16, 130, 54, '◀ BACK', { act: closeHelp, color: '#8a93a6', size: 24, back: true });
+  txt(G.helpPage ? 'NEW CAVE STUFF' : 'HOW TO PLAY', W / 2, 42, 44, '#fff', 'center', 800, 8);
+  button('back', 30, 16, 130, 54, '◀ BACK', { act: () => { G.helpPage = 0; closeHelp(); }, color: '#8a93a6', size: 24, back: true });
+  button('helpPage', W - 200, 16, 170, 54, G.helpPage ? '◀ PAGE 1' : 'MORE ▶', { act: () => { G.helpPage = G.helpPage ? 0 : 1; Snd.ui(); }, color: '#7aa8ff', size: 24 });
   const colW = (W - 80) / 2, rowH = 84, top = 86;
-  HELP.forEach(([icon, text], k) => {
+  (G.helpPage ? HELP2 : HELP).forEach(([icon, text], k) => {
     const col = k % 2, row = (k / 2) | 0;
     const x = 40 + col * colW, y = top + row * rowH;
     ctx.fillStyle = 'rgba(5,20,35,0.5)'; rr(ctx, x, y, colW - 16, rowH - 10, 16); ctx.fill();
@@ -2237,6 +2618,13 @@ function drawHelpIcon(icon, x, y) {
     case T.BOMBITEM: drawPuffer(x, y, false, 0, s); break;
     case T.CLOCK: drawClock(x, y, s); break;
     case T.WALL: ctx.drawImage(SPR.wall, x - 28, y - 28, 56, 56); break;
+    case T.SAND: ctx.drawImage(SPR.sand, x - 28, y - 28, 56, 56); break;
+    case T.BUBBLE: drawBubble(x, y, 0); break;
+    case T.PORTAL: drawPortal(x, y, 0, 0.95); break;
+    case T.CLAM: drawClam(x, y, (Math.sin(G.time * 2) + 1) / 2, false); break;
+    case T.EEL: drawEel(x, y, 1, 0, 0.85); break;
+    case 'hint': txt('💡', x, y + 2, 40, '#fff', 'center', 600); break;
+    case 'restart': txt('↻', x, y + 2, 44, '#ffb347', 'center', 800, 5); break;
   }
   ctx.restore();
 }
@@ -2332,15 +2720,18 @@ function caveInPlay(idx, seed) {
   return c;
 }
 
+const landable = v => v === T.EMPTY || v === T.MUD || v === T.SAND || v === T.PEARL || v === T.BUBBLE;   // where a whirlpool can drop you
 function stepInto(w, i, dir) {   // can the lotl enter cell i (moving in dir)?
   const v = w.t[i];
   if (v === T.EMPTY || v === T.MUD || v === T.PEARL || v === T.KEY || v === T.BOMBITEM || v === T.CLOCK) return true;
+  if (v === T.SAND || v === T.BUBBLE) return true;
+  if (v === T.PORTAL) { const d = portalExit(w, i, dir); return d >= 0 && landable(w.t[d]); }
   if (v === T.GATE) return !!w.keys[w.d[i]];
   if (v === T.EXIT) return w.exitOpen;
   if (v === T.ROCK && (dir === 1 || dir === 3)) return w.t[i + (dir === 1 ? 1 : -1)] === T.EMPTY;
   return false;
 }
-const isCritter = v => v === T.CRAB || v === T.JELLY;
+const isCritter = v => v === T.CRAB || v === T.JELLY || v === T.EEL;
 // is a crab or jelly next to cell i (r=1), or one open-water step away from being next to it (r=2)?
 function nearCritter(w, i, r) {
   const t = w.t, off = offOf(w);
@@ -2356,7 +2747,7 @@ function nearCritter(w, i, r) {
 // breadth-first search over cells the lotl can walk through (rocks block; pushing is an intervention)
 function solveBfs(w, avoid, keepRocks) {
   const n = w.n, ww = w.w, t = w.t;
-  const prev = new Int32Array(n).fill(-2), dist = new Int32Array(n).fill(-1), q = new Int32Array(n);
+  const prev = new Int32Array(n).fill(-2), dist = new Int32Array(n).fill(-1), q = new Int32Array(n), dirTo = new Int8Array(n);
   const s = w.player.i;
   let qh = 0, qt = 0;
   q[qt++] = s; prev[s] = -1; dist[s] = 0;
@@ -2365,22 +2756,38 @@ function solveBfs(w, avoid, keepRocks) {
     const cur = q[qh++];
     if (cur !== s && t[cur] === T.EXIT) continue;   // entering the shell ends the cave
     for (let k = 0; k < 4; k++) {
-      const nb = cur + off[k];
+      let nb = cur + off[k];
+      if (t[nb] === T.PORTAL) {   // a whirlpool: you come out next to its partner
+        nb = portalExit(w, nb, k);
+        if (nb < 0 || !landable(t[nb])) continue;
+      }
       if (prev[nb] !== -2) continue;
       const v = t[nb];
       if (v === T.ROCK || !stepInto(w, nb, k)) continue;
       if (avoid && nearCritter(w, nb, avoid)) continue;
-      if (keepRocks && v === T.MUD && t[nb - ww] === T.ROCK) continue;
-      prev[nb] = cur; dist[nb] = dist[cur] + 1; q[qt++] = nb;
+      if (keepRocks && (v === T.MUD || v === T.SAND) && t[nb - ww] === T.ROCK) continue;
+      prev[nb] = cur; dist[nb] = dist[cur] + 1; dirTo[nb] = k; q[qt++] = nb;
     }
   }
-  return { prev, dist, order: q.subarray(0, qt) };
+  return { prev, dist, dirTo, order: q.subarray(0, qt) };
+}
+// the first whirlpool a path goes through (or -1)
+function pathPortal(w, bfs, target) {
+  const off = offOf(w);
+  let cur = target, found = -1;
+  while (cur !== w.player.i && cur >= 0) {
+    const p = bfs.prev[cur];
+    if (p < 0) break;
+    const step = p + off[bfs.dirTo[cur]];
+    if (step !== cur && w.t[step] === T.PORTAL) found = step;   // the jump went through this whirlpool
+    cur = p;
+  }
+  return found;
 }
 function firstDir(w, bfs, target) {
   let cur = target;
   while (bfs.prev[cur] !== w.player.i) { cur = bfs.prev[cur]; if (cur < 0) return -1; }
-  const d = cur - w.player.i, ww = w.w;
-  return d === -ww ? 0 : d === 1 ? 1 : d === ww ? 2 : 3;
+  return bfs.dirTo[cur];
 }
 // how good is this cave state? pearls you have + pearls you could walk to
 function potential(w) {
@@ -2388,7 +2795,7 @@ function potential(w) {
   let p = w.pearls;
   for (const i of b.order) {
     const v = w.t[i];
-    if (v === T.PEARL && !w.fall[i]) p++;
+    if (isPearlish(v) && !w.fall[i]) p++;
     else if (v === T.KEY) p += 0.5;
     else if (v === T.BOMBITEM) p += 0.3;
     else if (v === T.EXIT && w.exitOpen) p += 3;
@@ -2418,7 +2825,11 @@ function safeStep(w, input) {
   if (!escapeFrom(a, 2, 12)) return null;
   // don't walk into a pocket that rocks will close behind you
   const settled = simRun(cloneCave(a), NOIN, 8);
-  if (settled.phase === 'play' && !canGo(settled)) return null;
+  if (settled.phase === 'play') {
+    if (!canGo(settled)) return null;
+    const room = solveBfs(settled, 0).order.length;   // don't step into a pocket that's closing (unless we're already in one)
+    if (room < 4 && room < solveBfs(w, 0).order.length) return null;
+  }
   return a;
 }
 function canGo(w) {
@@ -2437,7 +2848,7 @@ function interventions(w, reach) {
     for (let d = 0; d < 4; d++) {
       const x = r + off[d];
       // slurp the mud (or pearl) under a rock so it drops
-      if ((t[x] === T.MUD || t[x] === T.PEARL) && t[x - ww] === T.ROCK && d !== 0 && !seen.has('r' + x)) {
+      if ((t[x] === T.MUD || t[x] === T.SAND || isPearlish(t[x])) && t[x - ww] === T.ROCK && d !== 0 && !seen.has('r' + x)) {
         seen.add('r' + x); out.push({ kind: 'release', stand: r, cell: x, rock: x - ww, acts: [{ dir: d, grab: true }] });
       }
       // push a rock sideways
@@ -2461,11 +2872,11 @@ function teleport(w, stand) {
   return o;
 }
 function critters(w) {
-  const n = { crab: 0, jelly: 0, fish: 0 };
-  for (let i = 0; i < w.n; i++) { const v = w.t[i]; if (v === T.CRAB) n.crab++; else if (v === T.JELLY) n.jelly++; else if (v === T.FISH) n.fish++; }
+  const n = { crab: 0, jelly: 0, fish: 0, eel: 0 };
+  for (let i = 0; i < w.n; i++) { const v = w.t[i]; if (v === T.CRAB) n.crab++; else if (v === T.JELLY) n.jelly++; else if (v === T.FISH) n.fish++; else if (v === T.EEL) n.eel++; }
   return n;
 }
-const critterCount = w => { const n = critters(w); return n.crab + n.jelly + n.fish; };
+const critterCount = w => { const n = critters(w); return n.crab + n.jelly + n.fish + n.eel; };
 // try a cave-changing move from state s (lotl already on its spot): wait `tw` steps, do it, get clear,
 // then let the cave settle. Returns the inputs and how much it helped.
 function tryIntervention(s, iv, tw, base) {
@@ -2498,7 +2909,7 @@ function tryIntervention(s, iv, tw, base) {
   if (isOver(settle)) return null;
   const gain = potential(settle) - base;
   const k0 = critters(s), k1 = critters(settle);
-  const killedKind = k1.fish < k0.fish ? 'fish' : k1.jelly < k0.jelly ? 'jelly' : k1.crab < k0.crab ? 'crab' : '';
+  const killedKind = k1.fish < k0.fish ? 'fish' : k1.jelly < k0.jelly ? 'jelly' : k1.eel < k0.eel ? 'eel' : k1.crab < k0.crab ? 'crab' : '';
   return { inputs, gain, killed: critterCount(s) - critterCount(settle), killedKind };
 }
 
@@ -2537,7 +2948,7 @@ function* solveCave(c0, opts) {
       const v = w.t[i];
       let want = false, extra = 0;
       if (w.exitOpen) want = v === T.EXIT;
-      else if (v === T.PEARL && !w.fall[i]) want = true;
+      else if (isPearlish(v) && !w.fall[i]) want = true;
       else if (v === T.KEY) { want = true; extra = -2; }
       else if (v === T.BOMBITEM) { want = true; extra = 1; }
       else if (v === T.CLOCK) { want = true; extra = 6; }
@@ -2552,7 +2963,7 @@ function* solveCave(c0, opts) {
       const adjacent = bfs.prev[best] === pi;
       if (opts.trace) opts.trace.push([steps, pi % w.w, (pi / w.w) | 0, best % w.w, (best / w.w) | 0, d]);
       const kind = w.exitOpen ? 'exit' : 'collect';
-      if (!log.length || log[log.length - 1].cell !== best) log.push({ kind, cell: best, what: w.t[best], at: steps });
+      if (!log.length || log[log.length - 1].cell !== best) log.push({ kind, cell: best, what: w.t[best], at: steps, portal: pathPortal(w, bfs, best) });
       let next = d >= 0 ? safeStep(w, { dir: d }) : null;
       let inp = { dir: d };
       if (!next && adjacent && w.t[best] !== T.EXIT) { inp = { dir: d, grab: true }; next = safeStep(w, inp); }   // slurp it instead
@@ -2704,13 +3115,17 @@ function adviceFrom(res) {
     return { state: 'show', kind: 'restart', text: "Hmm, I can't find a way from here. Try ↻ to start the cave again!", t: 0 };
   }
   if (!e) return { state: 'show', kind: 'tip', text: hintText(c.L.hint || 'Look for pearls you can reach!'), t: 0 };
-  const h = { state: 'show', kind: e.kind, cell: e.cell, t: 0, was: c.t[e.cell], bombs: c.bombs };
-  const who = { crab: 'the crab', jelly: 'the jellyfish', fish: 'the catfish' }[e.killedKind];
+  const h = { state: 'show', kind: e.kind, cell: e.cell, t: 0, was: c.t[e.cell], bombs: c.bombs, warp: c.player.warpT || 0 };
+  if ((e.kind === 'collect' || e.kind === 'exit') && e.portal >= 0) {   // the way there is through a whirlpool: point at that
+    return Object.assign(h, { kind: 'portal', cell: e.portal, was: T.PORTAL, text: e.kind === 'exit' ? 'Swim into this whirlpool to get to the shell!' : 'Swim into this whirlpool! It takes you to more pearls.' });
+  }
+  const who = { crab: 'the crab', jelly: 'the jellyfish', fish: 'the catfish', eel: 'the eel' }[e.killedKind];
   switch (e.kind) {
     case 'collect':
       h.text = e.what === T.KEY ? 'Grab this key! It opens the gate of the same color.'
         : e.what === T.BOMBITEM ? 'Grab this puffer!'
-        : e.what === T.CLOCK ? 'Grab the clock bubble for more time!' : 'Go grab this pearl!';
+        : e.what === T.CLOCK ? 'Grab the clock bubble for more time!'
+        : e.what === T.BUBBLE ? 'Go grab this bubble pearl!' : 'Go grab this pearl!';
       break;
     case 'exit': h.text = 'The shell is open! Swim in!'; break;
     case 'release':
@@ -2732,6 +3147,7 @@ function updateHint(dt) {
   let done = h.t > 14 || c.phase !== 'play';
   if (h.cell != null) {
     if (h.kind === 'bomb') done = done || c.bombs < h.bombs;
+    else if (h.kind === 'portal') done = done || (c.player.warpT || 0) !== h.warp;
     else if (h.kind !== 'wait') done = done || c.t[h.cell] !== h.was;
   }
   if (done) G.hint = null;
@@ -2807,8 +3223,8 @@ function validateAll(ticks) {
   for (let idx = 0; idx < LEVELS.length; idx++) {
     C = newCave(idx); OFF = [-C.w, 1, C.w, -1];
     const c = C;
-    let pearls = 0, jellies = 0, fish = 0, crabs = 0;
-    for (let i = 0; i < c.n; i++) { if (c.t[i] === T.PEARL) pearls++; if (c.t[i] === T.JELLY) jellies++; if (c.t[i] === T.FISH) fish++; if (c.t[i] === T.CRAB) crabs++; }
+    let pearls = 0, jellies = 0, fish = 0, crabs = 0, eels = 0;
+    for (let i = 0; i < c.n; i++) { const v = c.t[i]; if (isPearlish(v)) pearls++; if (v === T.JELLY) jellies++; if (v === T.FISH) fish++; if (v === T.CRAB) crabs++; if (v === T.EEL) eels++; }
     // can the lotl dig from the start to the exit (walls, bedrock and gates block)?
     const seen = new Uint8Array(c.n), q = [c.entry]; seen[c.entry] = 1;
     let reachPearls = 0, reachExit = false;
@@ -2816,8 +3232,8 @@ function validateAll(ticks) {
       const cur = q.pop();
       for (const o of OFF) {
         const nb = cur + o, tn = c.t[nb];
-        if (seen[nb] || tn === T.STEEL || tn === T.WALL || tn === T.GATE || tn === T.MAGIC) continue;
-        seen[nb] = 1; if (tn === T.PEARL) reachPearls++; if (tn === T.EXIT) { reachExit = true; continue; }
+        if (seen[nb] || tn === T.STEEL || tn === T.WALL || tn === T.GATE || tn === T.MAGIC || tn === T.PORTAL || tn === T.CLAM) continue;
+        seen[nb] = 1; if (isPearlish(tn)) reachPearls++; if (tn === T.EXIT) { reachExit = true; continue; }
         q.push(nb);
       }
     }
@@ -2826,7 +3242,7 @@ function validateAll(ticks) {
     // the real proof: can the solver finish it? (3 tries with different critter/algae luck)
     let solved = null;
     for (let a = 0; a < 3 && !(solved && solved.ok); a++) solved = solveNow(caveInPlay(idx, 1000 + a * 7919), { seed: a + 1, jitter: a ? 6 : 0.5 });
-    out.push({ cave: idx + 1, name: c.L.name, size: (c.w - 2) + 'x' + (c.h - 2), need: c.need, pearls, reachPearls, jellies, crabs, fish, reachExit, aliveIdle: c.player.alive,
+    out.push({ cave: idx + 1, name: c.L.name, size: (c.w - 2) + 'x' + (c.h - 2), need: c.need, pearls, reachPearls, jellies, crabs, fish, eels, reachExit, aliveIdle: c.player.alive,
       solved: solved.ok, solverSeconds: Math.round(solved.steps * TICK) + '/' + c.L.time, solverMoves: solved.log.filter(l => l.kind !== 'collect' && l.kind !== 'exit').map(l => l.kind).join(' '),
       problem: solved.ok ? '' : solved.reason });
   }

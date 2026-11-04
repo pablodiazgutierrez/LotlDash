@@ -80,10 +80,20 @@ like the old cave diggers. The lotl moves first in every step, so a dodge always
 | 🐡 Puffer | Pick one up, then drop it in front of you. It puffs up for ~1.3 s and pops like a crab explosion, which breaks coral. Get two cells away. |
 | ⏱ Clock bubble | +15 seconds. |
 
+New in caves 17–32:
+
+| Thing | What it does |
+|---|---|
+| 🏖 Sand | Falls like a rock but never hurts and never rolls: it just piles up, filling the tunnels behind you. Dig through it like mud. Rocks rest on it. |
+| 🫧 Bubble pearl | A pearl in a bubble that floats **up**: dig the mud above one and it rises (rolling off round things) until something stops it. One rising into you is a `CATCH!`. Counts as a pearl. |
+| 🌀 Whirlpool | Comes in pairs (cyan `u`/`U`, violet `y`/`Y`). Swim into one and you pop out of its partner, on the side you were heading towards (blocked if that cell is solid). Rocks and critters ignore them; blasts can't break them. |
+| 🐚 Clam door | Opens and shuts on a beat (`CLAM_OPEN`/`CLAM_SHUT` steps, or per cave `clam: [open, shut]`; `K` runs half a beat after `k`). Shut, it's solid. It wobbles just before it snaps shut, and it never shuts on anything in the doorway. |
+| ⚡ Eel | A rival that zooms in a straight line (sideways `e`, up and down `E`) and turns back at anything in its way, so it never chases you into side tunnels: you time your dash. Touch it: BZZZT. Drop a rock on it (or let algae touch it) and it bursts into pearls. |
+
 ## The caves
 
-16 caves in 4 worlds. Each one introduces one idea with a hint card at the start,
-then the last world mixes everything.
+32 caves in 8 worlds (the cave picker shows 16 per page). Each one introduces one idea
+with a hint card at the start, then the last world of each half mixes everything.
 
 | # | World | Cave | Teaches |
 |---|---|---|---|
@@ -103,6 +113,22 @@ then the last world mixes everything.
 | 14 | | Crab Catacombs | crab loops + glow coral |
 | 15 | | Rock Slide | a rock-heavy race, clock bubbles |
 | 16 | | The Deep Vault | everything |
+| 17 | Sandy Reef | Sand Slide | sand: it falls but it's soft |
+| 18 | | Bubble Up | bubble pearls float up |
+| 19 | | Dune Diggers | a big sandy cave |
+| 20 | | Sandcastle | a coral castle full of sand and pearls, jellies |
+| 21 | Sunken Ship | Whirlpool Hop | whirlpools between sealed rooms |
+| 22 | | Clam Doors | clam doors: go while they're open |
+| 23 | | Shipwreck | a wreck split in two by bedrock; the whirlpool crosses it |
+| 24 | | Captain's Vault | the key is in a cabin only a whirlpool reaches |
+| 25 | Eel Trench | Eel Alley | timing dashes past eels, dropping rocks on them |
+| 26 | | Up and Down | eels in up-and-down shafts, a clam on the exit |
+| 27 | | Electric Garden | algae grows into eel tunnels: pearls |
+| 28 | | Trench Run | a rocky race past eels |
+| 29 | Midnight Abyss | Abyss Gate | whirlpools, puffers, keys |
+| 30 | | Bubble Storm | bubbles + sand + algae + jellies |
+| 31 | | Glow Wreck | glow coral, eels and clams |
+| 32 | | The Pearl Palace | everything |
 
 Caves are data in the `LEVELS` array. Small ones are hand-drawn ASCII maps (legend in
 the comment above `LEVELS`). Big ones are seeded random fill plus `put` ops that place
@@ -120,7 +146,8 @@ structures, so changing `seed` reshuffles a cave while keeping its set pieces.
 - **Stars**: ★ clear it, ★ collect 40% more pearls than the quota, ★ finish with 35% of the
   time left. The criteria show on the clear card.
 - **Lotl collection**: Mochi and Coal are free. Matcha (clear cave 3), Storm (200 pearls),
-  Blaze (clear cave 8) and Splash (24 stars) are earned. Colour only, no gameplay difference.
+  Blaze (clear cave 8), Splash (24 stars), Coral (clear cave 20) and Nova (clear cave 32)
+  are earned. Colour only, no gameplay difference.
 
 ## Checking the caves: the solver
 
@@ -141,14 +168,15 @@ Critter and algae randomness comes from a per-cave seed, so a copy of a cave pla
 exactly like the original, and the solver's timing is exact.
 
 Open **`/?check`** (e.g. `http://localhost:8000/?check`) and the console prints a table for
-every cave and either `ALL 16 CAVES SOLVED` or the caves that need a look. Or run
+every cave and either `ALL 32 CAVES SOLVED` or the caves that need a look. Or run
 `LotlDash.validate()` (static checks plus the solver), `LotlDash.solveAll()`, or
 `LotlDash.solve(5)` for one cave. **Run it after editing any cave.** A cave the solver
 finishes is definitely possible; one it can't finish is either impossible or needs a trick
 the solver doesn't know, so look at it by hand.
 
-At the time of writing it solves all 16 caves with 5 out of 5 different critter/algae seeds,
-in about a second for the lot.
+At the time of writing it solves all 32 caves with 5 out of 5 different critter/algae seeds
+(160/160 runs), in a few seconds for the lot. It knows the new things too: it paths
+through whirlpools, waits for clams, gives eels a wide berth and drops rocks on them.
 
 ### 💡 Hints
 
@@ -156,7 +184,8 @@ The 💡 button in the top bar (or H) runs the same solver from wherever the pla
 now (the cave pauses for the fraction of a second it takes) and shows its next move: a
 dashed ring and a bouncing arrow on the cell (an arrow on the screen edge if it's off screen)
 plus a one-line card, e.g. *"Wait until the crab is right under this rock, then slurp the mud
-below it!"*, *"Drop a puffer here, then swim away fast!"*, *"Push this rock!"*. If the
+below it!"*, *"Drop a puffer here, then swim away fast!"*, *"Push this rock!"*, or, when the way
+to the next pearl goes through a whirlpool, *"Swim into this whirlpool!"*. If the
 solver can't get a single pearl further from here (the lotl dug itself into a corner), it
 says so and points at ↻. After 30 s without a new pearl (`HINT_NUDGE`) the 💡 button
 pulses and says *need a hint?*.
