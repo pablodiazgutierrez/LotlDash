@@ -1,0 +1,15 @@
+{
+  "name": "Lotl Dash",
+  "short_name": "Lotl Dash",
+  "description": "Dig through underwater caves, dodge falling rocks, and grab the pearls! An axolotl cave adventure.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#0b3a4a",
+  "theme_color": "#0b3a4a",
+  "icons": [
+    { "src": "assets/icon-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "assets/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

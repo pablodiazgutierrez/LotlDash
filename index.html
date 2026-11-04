@@ -13,9 +13,13 @@
 <title>Lotl Dash</title>
 <link rel="icon" type="image/png" href="assets/icon-64.png">
 <link rel="apple-touch-icon" href="assets/icon-180.png">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;800&display=swap" rel="stylesheet">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="preload" href="assets/fonts/baloo2-latin.woff2" as="font" type="font/woff2" crossorigin>
+<style>
+  /* Baloo 2 (SIL Open Font License), hosted with the game so it works offline */
+  @font-face { font-family: 'Baloo 2'; font-style: normal; font-weight: 400 800; font-display: swap;
+    src: url(assets/fonts/baloo2-latin.woff2) format('woff2'); }
+</style>
 <style>
   html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#06161d;
     -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;
@@ -2854,6 +2858,10 @@ window.LotlDash = {
 
 resize();
 if (document.fonts && document.fonts.load) document.fonts.load(`800 30px "Baloo 2"`).catch(() => {});
+// offline play: the service worker keeps a copy of the game on the device after the first visit
+if ('serviceWorker' in navigator && location.protocol !== 'file:' &&
+    (!/^(localhost|127\.)/.test(location.hostname) || /[?&]sw\b/.test(location.search)))
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
 requestAnimationFrame(frame);
 </script>
 </body>

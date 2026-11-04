@@ -5,7 +5,8 @@ A dig-and-dodge cave game for lotldash.pablart.com, starring the lotls from
 grab enough pearls to open the shell, and swim out before the timer runs down.
 
 The game itself is `index.html`: no build, no dependencies. The only other files are the
-title art and icons in `assets/` (generated with Codex image generation). Everything you
+title art and icons in `assets/` (generated with Codex image generation), the font, and the
+two small files that make it work offline (`sw.js`, `manifest.webmanifest`). Everything you
 see during play (tiles, creatures, the lotl) is drawn in code, because it has to move,
 squash and flash.
 
@@ -16,6 +17,26 @@ python3 -m http.server 8000   # then open http://localhost:8000
 ```
 
 On a tablet: landscape orientation, add to home screen for fullscreen.
+
+### Offline
+
+After the first visit the game works **without internet**, in the browser or installed:
+
+- **iPad / iPhone:** open lotldash.pablart.com in Safari, Share → *Add to Home Screen*. It
+  opens fullscreen like an app and plays offline (open it once while online first).
+- **Android / Chrome / Edge:** the browser offers *Install app* (or menu → *Add to Home
+  screen*). Same thing.
+- **Any browser:** just visiting once is enough; the page reloads offline from its saved copy.
+
+How: `sw.js` is a service worker that saves the page, the title art, the icons and the
+font (Baloo 2, hosted in `assets/fonts/` instead of Google Fonts, under the SIL Open Font
+License) on the device. The page is network-first: when online you always get the latest
+version (it waits 3.5 s, then falls back to the saved copy); the other files are served
+from the saved copy and refreshed in the background. `manifest.webmanifest` makes it
+installable. Saves (stars, unlocks) were already on the device in `localStorage`.
+
+The service worker isn't registered on `localhost` (so editing isn't fighting a cache)
+unless you add `?sw` to the URL to test it.
 
 ## Controls
 
@@ -165,6 +186,11 @@ The save lives in `localStorage['lotldash.save.v1']`.
 GitHub Pages, same as Lotl Quest: repo `pablodiazgutierrez/LotlDash`, branch `main`, root
 folder, with a `CNAME` file for `lotldash.pablart.com`. DNS is a Route53 CNAME
 `lotldash.pablart.com → pablodiazgutierrez.github.io`. Push to `main` to deploy.
+
+If you add, rename or remove a file the game loads (new art, a sound file...), add it to
+`FILES` in `sw.js` and bump `CACHE` (`lotldash-v2`, ...) so devices pick it up for offline
+play. Changes to `index.html` alone need nothing: it's fetched fresh whenever there's a
+connection.
 
 ### Designing critter caves
 
