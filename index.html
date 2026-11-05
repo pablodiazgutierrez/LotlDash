@@ -88,6 +88,14 @@ const SAVE_KEY = 'lotldash.save.v1';
 let save = { unlocked: 1, stars: {}, best: {}, tries: {}, pearlsAll: 0, lotl: 0, mute: false, music: true, champion: false, seenLotls: ['mochi', 'coal'] };
 try { Object.assign(save, JSON.parse(localStorage.getItem(SAVE_KEY) || '{}')); } catch (e) {}
 const persist = () => { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) {} };
+// ask the browser to keep the save for good (not clear it when the device is short on space,
+// or after a week away in Safari). Asked after the first cleared cave, since Firefox shows a prompt.
+function keepSave() {
+  try {
+    if (navigator.storage && navigator.storage.persist)
+      navigator.storage.persisted().then(yes => yes || navigator.storage.persist()).catch(() => {});
+  } catch (e) {}
+}
 
 /* ============================================================
    SOUND — tiny WebAudio blips, plus a soft looping tune
@@ -1216,7 +1224,7 @@ function winCave() {
   save.unlocked = Math.max(save.unlocked, Math.min(LEVELS.length, idx + 2));
   if (idx === LEVELS.length - 1) save.champion = true;
   const fresh = LOTLS.filter(l => isUnlocked(l) && !before.includes(l.id));
-  persist();
+  persist(); keepSave();
   c.result = { timeBonus, total, stars, starPearls, fresh, shown: 0 };
   Snd.win();
   confetti();
@@ -2515,7 +2523,8 @@ function drawTitle() {
   ctx.fillStyle = 'rgba(5,20,35,0.55)'; rr(ctx, bx - 20, by - 20, bw + 40, 290, 26); ctx.fill();
   const nxt = nextCaveIndex();
   button('play', bx, by, bw, 92, nxt === 0 && save.best[0] == null ? '▶ PLAY' : `▶ PLAY CAVE ${nxt + 1}`, { act: () => startCave(nxt), color: '#3ccf7a', size: 40 });
-  button('cavesBtn', bx, by + 110, bw, 64, '🗺 CAVES', { act: openCaves, color: '#b98cff' });
+  const open = Math.min(save.unlocked, LEVELS.length);   // every cave reached so far can be picked from here
+  button('cavesBtn', bx, by + 110, bw, 64, open > 1 ? `🗺 PICK A CAVE 1–${open}` : '🗺 CAVES', { act: openCaves, color: '#b98cff', size: open > 1 ? 28 : undefined });
   button('helpBtn', bx, by + 190, bw, 64, '? HOW TO PLAY', { act: openHelp, color: '#7aa8ff' });
   // lotl picker, bottom-left
   const lx = 40, ly = H - 210, lw = 300, lh = 180;

@@ -212,7 +212,11 @@ Feel knobs are constants near the top of the script: `TICK` (step length, 0.15 s
 once every 2 cave steps, i.e. half the lotl's speed; set it to 1 for classic-speed critters). Algae speed and size are per-cave
 (`algaeSlow`, `algaeMax`).
 
-The save lives in `localStorage['lotldash.save.v1']`.
+The save lives in `localStorage['lotldash.save.v1']`. It records every cave reached; the title's
+**🗺 PICK A CAVE 1–N** button opens the cave map, where any unlocked cave can be started.
+After the first cleared cave the game asks the browser to keep the save for good
+(`navigator.storage.persist()`), so it isn't wiped when space runs low. Each browser keeps its
+own save: on an iPad, the home-screen app and Safari don't share one.
 
 ## Deploying
 
